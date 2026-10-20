@@ -65,7 +65,7 @@ export function styleReferenceReducer(state: StyleReferenceState, action: StyleR
       return {
         ...state, draft: action.value, savedValue: action.value, saving: false, submitted: null,
         externalValue: state.externalValue === action.value ? null : state.externalValue,
-        notice: { message: action.value ? "风格参考已保存，将用于后续 AI 生成。" : "风格参考已清除，后续生成不再使用这份参考。" },
+        notice: { message: action.value ? "风格参考已保存，将用于后续 AI 生成。" : "风格参考已清除，后续生成继续使用内置精选范文标准。" },
       };
     case "save-failure":
       return { ...state, saving: false, submitted: null, notice: { message: action.message, error: true } };
@@ -148,18 +148,18 @@ function StyleReferenceEditor({ module, value, onSave, onDirtyChange, disabled =
     <summary>
       <span className="style-reference-title">个人风格参考</span>
       <span className={`style-reference-badge ${state.savedValue.trim() ? "is-set" : ""}`}>
-        {state.savedValue.trim() ? "有参考" : "未设置"}
+        {state.savedValue.trim() ? "有参考" : "已用内置范文"}
       </span>
       {(dirty || state.saving) && <span className="style-reference-dirty">{state.saving ? "保存中…" : "有未保存修改"}</span>}
       <ChevronDown size={17} className="style-reference-chevron" aria-hidden="true" />
     </summary>
     <div className="style-reference-body">
-      <p className="style-reference-description">三个模块分别保存。本份参考供{moduleName}模块的所有学生{module === "one-to-one" ? "" : "和班级"}复用，保存后用于后续 AI 生成。</p>
+      <p className="style-reference-description">已内置三个模块各自的精选范文标准，可直接生成反馈。这里可选补充自己的范文，三个模块分别保存；本份参考供{moduleName}模块的所有学生{module === "one-to-one" ? "" : "和班级"}复用。</p>
       <label className="field" htmlFor={fieldId}>
         {moduleName}风格参考
         <textarea id={fieldId} rows={7} maxLength={12000} value={state.draft} readOnly={locked}
           aria-describedby={`${fieldId}-hint ${fieldId}-count`}
-          placeholder="粘贴 1–3 份你满意的反馈范文，可以用空行分隔。"
+          placeholder="选填：补充 1–3 份你满意的反馈范文，可以用空行分隔。留空也可使用内置标准生成。"
           onChange={(event) => edit(event.target.value)} />
       </label>
       <div className="style-reference-guidance">

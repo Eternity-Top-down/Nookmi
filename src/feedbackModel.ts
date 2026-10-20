@@ -7,6 +7,29 @@ import type {
 } from "./types";
 import { isValidLessonAt } from "./feedback";
 
+/** Resolve the anonymous model placeholder locally; never apply to saved or handwritten text. */
+export function prepareGeneratedFeedback(content: unknown, studentName: string): string {
+  if (typeof content !== "string" || !content.trim() || content.length > 10000)
+    throw new Error("AI 返回内容为空或过长，请重试。");
+  const personalized = content.split("【学生】").join(studentName).trim();
+  if (!personalized || personalized.length > 10000)
+    throw new Error("AI 返回内容替换称呼后过长，请改用简短篇幅重试。");
+  return personalized;
+}
+
+/** Group the same review notice once, while keeping it separate from the feedback body. */
+export function formatGenerationReviewWarnings(warnings: ReadonlyArray<{ name: string; warning?: string }>): string {
+  const grouped = new Map<string, Set<string>>();
+  for (const { name, warning } of warnings) {
+    if (typeof warning !== "string" || !warning.trim()) continue;
+    const text = warning.trim();
+    const names = grouped.get(text) ?? new Set<string>();
+    names.add(name);
+    grouped.set(text, names);
+  }
+  return [...grouped].map(([warning, names]) => `${[...names].join("、")}：${warning}`).join(" ");
+}
+
 export function emptyObservations(): StudentObservations {
   return {
     performance: "",

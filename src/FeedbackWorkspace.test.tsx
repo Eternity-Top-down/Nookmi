@@ -347,6 +347,8 @@ describe("simple student situation input", () => {
     const main = labeledTextareas(html).find((field) => field.label.startsWith(label));
     expect(main?.attributes).toContain('rows="4"');
     expect(main?.label).toContain("亮点、困难和建议可以写在一起");
+    expect(main?.label).toContain("能独立做什么、卡在哪里、提示后怎样");
+    expect(main?.attributes).not.toMatch(/\brequired\b/);
     const details = optionalDetails(html);
     expect(details).toBeDefined();
     expect(details?.[1]).not.toMatch(/\bopen(?:=|\s|$)/);
@@ -375,6 +377,29 @@ describe("simple student situation input", () => {
     expect(button).toBeDefined();
     expect(button?.[1]).not.toContain("disabled");
     expect(labeledTextareas(html).find((field) => field.label.startsWith("课堂状态与掌握情况"))?.value).toBe("");
+  });
+
+  it.each([
+    ["one-to-one", "数列基础题能独立做", "讲解后能自己订正"],
+    ["evening", "作业按时完成", "物理电路图经提示能分析"],
+    ["course", "集合基础题能独立做", "稍作提示后能继续推导"],
+  ] as const)("guides short factual notes in %s without requiring more fields or personal references", (module, subject, response) => {
+    const { session, student } = fixture(module);
+    session.entries[0].observations!.performance = "能独立做基础题，变式需要提示";
+    const html = renderToStaticMarkup(<FeedbackWorkspace
+      module={module} students={[student]} classId={student.classId}
+      studentId={module === "one-to-one" ? student.id : null}
+      sessions={[session]} onSave={async () => true} onSaveStyle={async () => true}
+    />);
+    const main = labeledTextareas(html).find((field) => field.label.startsWith(module === "one-to-one" ? "课堂状态与掌握情况" : "学生情况"));
+    expect(main?.attributes).toContain(subject);
+    expect(main?.attributes).toContain(response);
+    expect(html).toContain("已用内置范文");
+    expect(html).toMatch(/<option value="standard" selected="">按范文完整展开<\/option>/);
+    expect(html).toContain('<option value="brief">简短，抓住重点</option>');
+    const button = [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)]
+      .find((match) => match[2].includes("AI 生成反馈"));
+    expect(button?.[1]).not.toContain("disabled");
   });
 
   it("keeps one-to-one homework and evening subject records outside the optional details", () => {

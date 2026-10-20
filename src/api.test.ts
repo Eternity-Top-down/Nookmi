@@ -5,6 +5,7 @@ import {
   putWorkspace,
   saveAISettings,
   generateFeedback,
+  testAIConnection,
 } from "./api";
 import { EMPTY_DATA } from "./data";
 import { defaultBrief, emptyObservations } from "./feedbackModel";
@@ -15,6 +16,44 @@ afterEach(() => {
 });
 
 describe("Python API boundary", () => {
+  it.each([
+    ["feedback generation", 150000],
+    ["connection test", 95000],
+  ] as const)("allows the expected waiting window for %s", async (operation, timeout) => {
+    vi.useFakeTimers();
+    let requestSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn((_path, options: RequestInit) => new Promise((_resolve, reject) => {
+      requestSignal = options.signal as AbortSignal;
+      requestSignal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    })));
+    const pending = (operation === "connection test" ? testAIConnection() : generateFeedback({
+      module: "one-to-one", grade: "初二",
+      brief: defaultBrief("one-to-one", ["初二"], new Date(2026, 9, 21)),
+      observations: { ...emptyObservations(), performance: "能说明计算过程" },
+    })).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(timeout - 1);
+    expect(requestSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(requestSignal?.aborted).toBe(true);
+    expect(await pending).toMatchObject({ status: 0, message: expect.stringContaining("请求等待超时") });
+  });
+
+  it("keeps a review warning separate from the usable initial draft without retrying", async () => {
+    const reply = { content: "【学生】的初稿正文", model: "test", reviewWarning: "自动复核未完成，请核对初稿。" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(reply), {
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await generateFeedback({
+      module: "one-to-one", grade: "初二",
+      brief: defaultBrief("one-to-one", ["初二"], new Date(2026, 9, 21)),
+      observations: { ...emptyObservations(), performance: "能说明计算过程" },
+    });
+    expect(result).toEqual(reply);
+    expect(result.content).not.toContain(result.reviewWarning);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("sends only the reference supplied for each module and preserves its original text", async () => {
     const fetchMock = vi.fn().mockImplementation(async () => new Response(
       JSON.stringify({ content: "生成结果", model: "test" }),

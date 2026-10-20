@@ -33,6 +33,7 @@ import {
   entryIsStale,
   feedbackSnapshot,
   feedbackInputErrors,
+  formatGenerationReviewWarnings,
   generationSignature,
   hasFeedbackContent,
   hasObservations,
@@ -40,6 +41,7 @@ import {
   normalizeObservations,
   normalizeOneToOneTasks,
   outlineFeedback,
+  prepareGeneratedFeedback,
   sortFeedbackByRecentEdit,
 } from "./feedbackModel";
 import type {
@@ -75,6 +77,7 @@ type Proposal = {
   source: "ai" | "outline";
   signature: string;
   revision: Revision;
+  reviewWarning?: string;
 };
 type Confirmation = {
   title: string;
@@ -722,6 +725,7 @@ export default function FeedbackWorkspace({
       skipped: 0,
       name: "",
     };
+    const reviewWarnings: { name: string; warning: string }[] = [];
     setProgress({ ...summary });
     setNeedsConfiguration(false);
     setStatus(null);
@@ -759,12 +763,7 @@ export default function FeedbackWorkspace({
         );
         if (job !== generationId.current || abortController.signal.aborted)
           return;
-        if (
-          typeof result.content !== "string" ||
-          !result.content.trim() ||
-          result.content.length > 10000
-        )
-          throw new Error("AI 返回内容为空或过长，请重试。");
+        const content = prepareGeneratedFeedback(result.content, student.name);
         if (
           !studentsRef.current.some((item) => item.id === student.id) ||
           !canApplyGeneration(started, revision(student.id))
@@ -776,17 +775,19 @@ export default function FeedbackWorkspace({
               "生成期间记录已修改，返回结果未覆盖当前内容。可按最新记录重新生成。",
             ),
           );
-        } else if (entry.content.trim()) {
-          setProposal({
-            student,
-            content: result.content.trim(),
-            source: "ai",
-            signature,
-            revision: started,
-          });
-          summary.success++;
         } else {
-          acceptGenerated(student, result.content.trim(), "ai", signature);
+          const reviewWarning = typeof result.reviewWarning === "string" ? result.reviewWarning.trim() : "";
+          if (reviewWarning) reviewWarnings.push({ name: student.name, warning: reviewWarning });
+          if (entry.content.trim()) {
+            setProposal({
+              student,
+              content,
+              source: "ai",
+              signature,
+              revision: started,
+              reviewWarning,
+            });
+          } else acceptGenerated(student, content, "ai", signature);
           summary.success++;
         }
       } catch (error) {
@@ -813,15 +814,16 @@ export default function FeedbackWorkspace({
     if (job === generationId.current) {
       controller.current = null;
       setProgress(null);
-      setStatus(
-        (previous) =>
-          previous ?? {
+      setStatus((previous) => {
+          const notice = previous ?? {
             text: isOneToOne
               ? (summary.failed ? "本次生成未完成，请查看下方原因后重试。" : "反馈已生成，请核对后复制。")
               : `生成完成：${summary.success} 位成功，${summary.failed} 位失败，${summary.skipped} 位跳过。请逐一核对后复制。`,
             error: summary.failed > 0,
-          },
-      );
+          };
+          const warning = formatGenerationReviewWarnings(reviewWarnings);
+          return warning ? { text: `${notice.text} ${warning}`, error: true } : notice;
+        });
     }
   }
   function requestGenerate(student: Student) {
@@ -1080,7 +1082,7 @@ export default function FeedbackWorkspace({
               }
             >
               <option value="brief">简短，抓住重点</option>
-              <option value="standard">适中，说明情况</option>
+              <option value="standard">按范文完整展开</option>
             </select>
           </label>
         </div>
@@ -1189,8 +1191,8 @@ export default function FeedbackWorkspace({
           <LoaderCircle size={17} className="fb-spin" />
           <span>
             {isOneToOne
-              ? "正在生成本节课反馈…"
-              : `正在生成 ${progress.name || "反馈"} · ${progress.completed} / ${progress.total}，失败 ${progress.failed} 位`}
+              ? "生成并检查中…"
+              : `生成并检查中 ${progress.name || "反馈"} · ${progress.completed} / ${progress.total}，失败 ${progress.failed} 位`}
           </span>
           <button
             type="button"
@@ -1265,13 +1267,17 @@ export default function FeedbackWorkspace({
                 </div>
                 <label className="field fb-observation">
                   {isOneToOne ? "课堂状态与掌握情况" : "学生情况"}
-                  <small>只需在这里记几条事实，亮点、困难和建议可以写在一起，不必再逐项填写。</small>
+                  <small>短句记下能独立做什么、卡在哪里、提示后怎样；亮点、困难和建议可以写在一起，有观察的再写。</small>
                   <textarea
                     rows={4}
                     value={observations.performance}
                     maxLength={2000}
                     readOnly={readonly}
-                    placeholder="如：能独立列出方程，移项时偶尔漏变号；遇到难题愿意尝试。短句即可。"
+                    placeholder={module === "one-to-one"
+                      ? "如：数列基础题能独立做，能提取条件但不会变形；提示用哪个公式后能继续，讲解后能自己订正。"
+                      : module === "evening"
+                        ? "如：作业按时完成，后半段容易聊天；数学方程会套公式，因式分解不熟；物理电路图经提示能分析。"
+                        : "如：集合基础题能独立做，多选题容易漏情况；不等式变形找不到切入点，稍作提示后能继续推导。"}
                     onChange={(event) =>
                       changeObservation("performance", event.target.value)
                     }
@@ -1660,6 +1666,9 @@ export default function FeedbackWorkspace({
               <pre>{proposal.content}</pre>
             </div>
           </div>
+          {proposal.reviewWarning && <p className="fb-inline-error" role="status">
+            {formatGenerationReviewWarnings([{ name: proposal.student.name, warning: proposal.reviewWarning }])}
+          </p>}
           {!proposalValid && (
             <p className="fb-inline-error">
               生成后原始输入又有变化，本候选不能覆盖当前内容。请关闭后按最新记录重新生成。
@@ -1693,7 +1702,8 @@ export default function FeedbackWorkspace({
                 );
                 setProposal(null);
                 setStatus({
-                  text: "已采用候选草稿，请核对事实与措辞后再复制。",
+                  text: `已采用候选草稿，请核对事实与措辞后再复制。${proposal.reviewWarning ? ` ${formatGenerationReviewWarnings([{ name: proposal.student.name, warning: proposal.reviewWarning }])}` : ""}`,
+                  error: Boolean(proposal.reviewWarning),
                 });
               }}
             >

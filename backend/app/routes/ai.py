@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request
 
 from ..schemas import AISettingsUpdate, GenerateRequest
-from ..services.prompts import build_messages, test_messages
+from ..services.feedback import generate_feedback as generate_and_review
+from ..services.prompts import test_messages
 from ..services.provider import ProviderError
 from ..services.settings import SettingsUnavailable
 
@@ -36,6 +37,6 @@ def test_connection(request: Request):
 @router.post("/generate")
 def generate_feedback(body: GenerateRequest, request: Request):
     try:
-        return request.app.state.provider.complete(build_messages(body))
+        return generate_and_review(body, request.app.state.provider)
     except ProviderError as error:
         raise HTTPException(error.status, error.message) from None

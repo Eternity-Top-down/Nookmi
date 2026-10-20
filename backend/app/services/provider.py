@@ -18,7 +18,7 @@ class AIProvider:
         self.settings = settings
         self.transport = transport
 
-    def complete(self, messages: list[dict[str, str]]) -> dict[str, str]:
+    def complete(self, messages: list[dict[str, str]], *, timeout_seconds: float = 60.0) -> dict[str, str]:
         try:
             settings = self.settings.read_private()
         except SettingsUnavailable:
@@ -30,7 +30,7 @@ class AIProvider:
             endpoint += "/chat/completions"
         try:
             with httpx.Client(
-                timeout=httpx.Timeout(60.0, connect=10.0),
+                timeout=httpx.Timeout(timeout_seconds, connect=min(5.0, timeout_seconds)),
                 follow_redirects=False, trust_env=False, transport=self.transport,
             ) as client:
                 response = client.post(

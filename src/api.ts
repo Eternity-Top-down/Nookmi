@@ -121,10 +121,16 @@ export interface GenerateRequest {
   styleReference?: string;
 }
 
+export interface GenerateResponse {
+  content: string;
+  model: string;
+  reviewWarning?: string;
+}
+
 export function generateFeedback(input: GenerateRequest, signal?: AbortSignal) {
-  return request<{ content: string; model: string }>(
+  return request<GenerateResponse>(
     "/ai/generate",
     { method: "POST", body: JSON.stringify(input), signal },
-    95000,
+    150000,
   );
 }

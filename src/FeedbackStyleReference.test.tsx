@@ -11,7 +11,10 @@ describe("personal style reference card", () => {
     const html = renderToStaticMarkup(<FeedbackStyleReference module={module} value="" onSave={async () => true} />);
     expect(html).toContain("个人风格参考");
     expect(html).toContain(`${label}风格参考`);
-    expect(html).toContain("未设置");
+    expect(html).toContain("已用内置范文");
+    expect(html).toContain("这里可选补充自己的范文");
+    expect(html).toContain("留空也可使用内置标准生成");
+    expect(html).not.toMatch(/<textarea[^>]*\brequired\b/i);
     expect(html).toContain("三个模块分别保存");
     expect(html).toContain("保存风格参考");
     expect(html).toContain("不照搬旧范文中的事实");

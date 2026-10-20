@@ -7,6 +7,7 @@ import {
   entryIsStale,
   feedbackSnapshot,
   feedbackInputErrors,
+  formatGenerationReviewWarnings,
   generationSignature,
   hasFeedbackContent,
   hasObservations,
@@ -14,9 +15,64 @@ import {
   mergeLessonTasks,
   normalizeOneToOneTasks,
   outlineFeedback,
+  prepareGeneratedFeedback,
   sortFeedbackByRecentEdit,
 } from "./feedbackModel";
 import type { FeedbackSession, ModuleId } from "./types";
+
+describe("generation review notices", () => {
+  it("groups the same warning once for all affected students", () => {
+    const warnings = [
+      { name: "测试甲", warning: " 自动复核未完成，请核对初稿。 " },
+      { name: "测试乙", warning: "自动复核未完成，请核对初稿。" },
+      { name: "测试甲", warning: "自动复核未完成，请核对初稿。" },
+    ];
+    const before = structuredClone(warnings);
+    expect(formatGenerationReviewWarnings(warnings)).toBe("测试甲、测试乙：自动复核未完成，请核对初稿。");
+    expect(warnings).toEqual(before);
+  });
+
+  it("keeps different notices associated with the correct names", () => {
+    expect(formatGenerationReviewWarnings([
+      { name: "测试甲", warning: "请核对初稿。" },
+      { name: "测试乙", warning: "复核超时，初稿已保留。" },
+    ])).toBe("测试甲：请核对初稿。 测试乙：复核超时，初稿已保留。");
+  });
+
+  it("does not warn for responses that completed their automatic review", () => {
+    expect(formatGenerationReviewWarnings([{ name: "测试甲" }, { name: "测试乙", warning: " \n " }])).toBe("");
+    expect(formatGenerationReviewWarnings([])).toBe("");
+  });
+});
+
+describe("local generated student references", () => {
+  it("replaces every anonymous reference with the exact target name independently", () => {
+    const response = "  【学生】能独立完成基础题。建议【学生】复盘变形过程。\n";
+    expect(prepareGeneratedFeedback(response, "测试甲")).toBe("测试甲能独立完成基础题。建议测试甲复盘变形过程。");
+    expect(prepareGeneratedFeedback(response, "测试乙")).toBe("测试乙能独立完成基础题。建议测试乙复盘变形过程。");
+    expect(response).toContain("【学生】");
+  });
+
+  it("inserts punctuation and replacement tokens literally", () => {
+    expect(prepareGeneratedFeedback("建议【学生】认真复盘，【学生】可以尝试重新推导。", "测试$&$`同学"))
+      .toBe("建议测试$&$`同学认真复盘，测试$&$`同学可以尝试重新推导。");
+  });
+
+  it("keeps ordinary wording intact and only recognizes the exact reserved placeholder", () => {
+    expect(prepareGeneratedFeedback("孩子基础题能做。[学生]不是占位符。", "测试同学"))
+      .toBe("孩子基础题能做。[学生]不是占位符。");
+  });
+
+  it.each([undefined, null, 17, "", " \n ", "字".repeat(10001)])("rejects invalid output before it can replace a saved draft", (value) => {
+    expect(() => prepareGeneratedFeedback(value, "测试同学")).toThrow("AI 返回内容为空或过长");
+  });
+
+  it("checks the final length after restoring the name", () => {
+    const response = `${"字".repeat(9996)}【学生】`;
+    expect(prepareGeneratedFeedback(response, "测试同学")).toHaveLength(10000);
+    expect(() => prepareGeneratedFeedback(response, "比较长的测试姓名")).toThrow("替换称呼后过长");
+  });
+});
 
 function fixture(): FeedbackSession {
   return {

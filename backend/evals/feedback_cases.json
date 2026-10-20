@@ -1,0 +1,197 @@
+{
+  "version": 1,
+  "name": "三模块反馈留出案例与边界检查",
+  "sourceNote": "前五例从用户提供、未被选作内置示例的作品中匿名逆向提炼，仅用于首轮校准，不代表教师实际填写时间或原始记录。后三例为虚构边界资料。所有案例与学生数据库独立，未包含真实姓名、学校或联系方式。",
+  "rubric": [
+    "事实完整且有依据：没有遗漏关键观察，也没有新增出勤、分数、情绪、进步、作业或其他学生情况。",
+    "掌握层次准确：分清独立完成、提示后继续、讲解后订正，不把听懂直接写成掌握。",
+    "困难具体：保留知识点、题型及卡住的步骤，不一律概括成基础薄弱。",
+    "建议对应问题：说明可尝试的做法；不把建议写成已经发生或已经布置的任务。",
+    "贴合模块与教师语气：结构合适、分寸准确、不空泛煽情；共用内容可一致，个人评价有事实。",
+    "实际可用度：教师需修改哪些事实、措辞或结构，是否能在少量修改后发送。"
+  ],
+  "cases": [
+    {
+      "id": "one-to-one-recursion",
+      "label": "一对一：条件变形与概率方案比较",
+      "sourceKind": "reference_reconstructed",
+      "request": {
+        "module": "one-to-one",
+        "grade": "高中",
+        "brief": {
+          "periodStart": "2026-10-04", "periodEnd": "2026-10-04", "subjects": ["数学"],
+          "teachingContent": "概率、等比数列、等差数列综合练习：至少至多事件的否定；等比数列前n项和、通项、公比；由首项和递推关系求参数；前n项和最值；独立事件概率。",
+          "commonTasks": "", "focus": "", "length": "standard"
+        },
+        "observations": {
+          "performance": "专注，能独立思考，尝试用所学知识；没思路的题讲解后能理解并自己订正。对立事件概率、常见事件概率、数列常见参数求法较扎实。数列已知条件的变形不熟；前n项和最值的构造思路不熟；含未知数的概率方案比较需要巩固。",
+          "strengths": "", "difficulties": "", "plan": "",
+          "tasks": "结合本节练习复习相关知识和做法，重点复习等比数列公式与性质。",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "一对一按四板块展开，五项学习内容和实际作业保留，不编造课次。",
+        "保留常见题型较扎实与条件变形不熟的区别，不泛化为整体数列基础薄弱。",
+        "建议对应条件加工、最值思路、概率方案比较；新增方法只能作为建议，不能声称课堂已练或已掌握。"
+      ]
+    },
+    {
+      "id": "evening-uncertain",
+      "label": "晚辅：纪律、学科差异与不确定观察",
+      "sourceKind": "reference_reconstructed",
+      "request": {
+        "module": "evening", "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-19", "periodEnd": "2026-10-23", "subjects": ["数学", "物理"],
+          "teachingContent": "", "commonTasks": "", "focus": "", "length": "standard"
+        },
+        "observations": {
+          "performance": "会间歇和同学聊天，但作业完成效率还不错。数学基础较之前有一些进步，实数计算的概念和方法理解不透，过程容易错；平面直角坐标系画图还行。物理作业很少，只从交流判断基础可能一般，没有充分作业依据。",
+          "strengths": "", "difficulties": "", "plan": "", "tasks": "", "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "聊天与效率不错同时保留，不把聊天一概推断为低效率或态度恶劣。",
+        "数学进步来自明确记录；物理基础判断必须保留交流来源和不确定性，不能写成已确认基础薄弱。",
+        "没有化学观察，不补化学；没有布置任务，不创造作业要求。"
+      ]
+    },
+    {
+      "id": "evening-multisubject",
+      "label": "晚辅：多科表现与旧知识巩固",
+      "sourceKind": "reference_reconstructed",
+      "request": {
+        "module": "evening", "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-19", "periodEnd": "2026-10-23", "subjects": ["数学", "物理", "化学"],
+          "teachingContent": "", "commonTasks": "", "focus": "", "length": "standard"
+        },
+        "observations": {
+          "performance": "纪律良好，每天认真记作业并按时完成，不会会问，听完思路后自己重新思考订正。数学二次函数基础不错，三角形相似要复习，一元二次方程解法要熟悉。物理化学整体作业完成不错，相关基础概念仍需经常复习。",
+          "strengths": "", "difficulties": "", "plan": "建议做作业时总结用了什么知识、为什么这么做。", "tasks": "", "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "开头说明记录、按时完成、主动提问及订正，不虚构正确率数字。",
+        "二次函数是优势，三角形相似与方程解法是巩固点，不能交换。",
+        "物理化学仅有整体观察，不擅自补电学、实验、化学方程式等具体困难。"
+      ]
+    },
+    {
+      "id": "course-classroom-balance",
+      "label": "班课：课堂活跃、练习认真与解题层次",
+      "sourceKind": "reference_reconstructed",
+      "request": {
+        "module": "course", "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01", "periodEnd": "2026-10-31", "subjects": ["数学"],
+          "teachingContent": "集合和不等式阶段复习：容斥原理、子集、交并补运算、不等式性质、基本不等式；结合第一次月考考点练习和讲解。",
+          "commonTasks": "", "focus": "", "length": "standard"
+        },
+        "observations": {
+          "performance": "活泼能带动气氛，但有时玩笑过头，兴奋影响听课。做练习认真，会独立思考，没思路会问，听完思路会重新尝试；速度一般但正确率较高，集合不等式基础不错。多选题会漏选错选；不等式变形、基本不等式求最值的切入点不熟，给出思路后能逐步完成。",
+          "strengths": "", "difficulties": "", "plan": "", "tasks": "", "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "课程概述、个人分析、编号建议适合月度班课，不强套一对一的四板块。",
+        "课堂兴奋和做题认真都保留，不能整体评价为不专注；速度一般不改为效率高。",
+        "基本不等式在给出思路后能继续，不写成已经独立熟练掌握。建议应涉及切入与条件变形，不能只说多练。"
+      ]
+    },
+    {
+      "id": "course-progress-uncertain",
+      "label": "班课：阶段进步与原因分寸",
+      "sourceKind": "reference_reconstructed",
+      "request": {
+        "module": "course", "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01", "periodEnd": "2026-10-31", "subjects": ["数学"],
+          "teachingContent": "集合与不等式阶段课程：集合概念和运算、不等式性质、基本不等式、一元二次不等式；月考相关练习。",
+          "commonTasks": "", "focus": "", "length": "standard"
+        },
+        "observations": {
+          "performance": "认真专注、独立思考，不会的讲解后能重新订正。开始几节正确率偏低、速度慢，后来完成情况有进步；可能是概念理解更清楚，原因还不确定。概念多选题易漏选错选，基本不等式求最值不易找到切入点，一元二次不等式分类讨论的边界条件易混乱。",
+          "strengths": "", "difficulties": "", "plan": "", "tasks": "", "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "可写阶段完成情况有进步，但不能把可能的原因改成确定因果。",
+        "一元二次不等式的边界混乱应明确保留，不改成普通计算粗心。",
+        "未输入考试成绩或排名，不编成绩提升；未输入每日次数，不自行布置打卡任务。"
+      ]
+    },
+    {
+      "id": "one-to-one-sparse",
+      "label": "边界：少量事实、没有教学清单或作业",
+      "sourceKind": "synthetic_boundary",
+      "request": {
+        "module": "one-to-one", "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-21", "periodEnd": "2026-10-21", "subjects": ["数学"],
+          "teachingContent": "", "commonTasks": "", "focus": "", "length": "standard"
+        },
+        "observations": {
+          "performance": "今天有一道题听完提示后自己完成了，具体题型尚未记录。",
+          "strengths": "", "difficulties": "", "plan": "", "tasks": "", "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "资料少可以简短，不从内置范文补数列、概率或其他知识点。",
+        "只知道一道题在提示后完成，不能推断整体基础、专注、进步、独立完成能力。",
+        "没有记录作业和课次，不产生作业章节内容或第几次课；没有内容的部分可省略。"
+      ]
+    },
+    {
+      "id": "evening-math-only",
+      "label": "边界：默认有三科，但只记录数学",
+      "sourceKind": "synthetic_boundary",
+      "request": {
+        "module": "evening", "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-19", "periodEnd": "2026-10-23", "subjects": ["数学", "物理", "化学"],
+          "teachingContent": "", "commonTasks": "", "focus": "", "length": "brief"
+        },
+        "observations": {
+          "performance": "", "strengths": "", "difficulties": "", "plan": "", "tasks": "",
+          "subjects": {"数学": "一元二次方程用公式法能独立解，因式分解时不会选择合适方法。"}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "只评价数学，不因为学科列表存在物理化学就自动补评价。",
+        "没有纪律、按时完成、主动问问题的观察，不自动加标准开头。",
+        "简短模式仍区分公式法独立完成与因式分解方法选择困难。"
+      ]
+    },
+    {
+      "id": "course-plan-not-fact",
+      "label": "边界：混写未来建议、没有正式作业",
+      "sourceKind": "synthetic_boundary",
+      "request": {
+        "module": "course", "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01", "periodEnd": "2026-10-31", "subjects": ["数学"],
+          "teachingContent": "集合的交并补运算。", "commonTasks": "", "focus": "", "length": "standard"
+        },
+        "observations": {
+          "performance": "能独立完成有限集合的交并运算，补集会漏看全集。建议做题前先圈出全集，下次准备引导他自己画图检查；这些还没有实施。",
+          "strengths": "", "difficulties": "", "plan": "", "tasks": "", "subjects": {}
+        },
+        "styleReference": "范例只参考自然教师语气：孩子愿意耐心尝试，讨论问题时能表达自己的想法。建议复盘时先说清自己的思路。"
+      },
+      "reviewPoints": [
+        "已会交并运算、补集漏看全集是观察；圈全集、下次画图属于建议或计划，不能写成已完成。",
+        "个人风格里的耐心、愿意表达不是当前学生事实，不得迁移。",
+        "任务栏为空，不能新增已布置的课后任务、题量、页码或完成期限。"
+      ]
+    }
+  ]
+}
