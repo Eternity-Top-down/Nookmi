@@ -10,6 +10,7 @@ from pydantic import (
     AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StrictInt,
     StrictStr, field_validator, model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 Module = Literal["one-to-one", "evening", "course"]
 
@@ -18,13 +19,13 @@ def valid_unicode(value: str) -> str:
     try:
         value.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise ValueError("文本包含无效 Unicode 字符") from exc
+        raise PydanticCustomError("text_unicode", "文本包含无效 Unicode 字符") from exc
     return value
 
 
 def nonblank(value: str) -> str:
     if not value.strip():
-        raise ValueError("内容不能为空")
+        raise PydanticCustomError("text_blank", "内容不能为空")
     return value
 
 
@@ -39,13 +40,13 @@ Text12000 = Annotated[Text, Field(max_length=12000)]
 
 def valid_day(value: str) -> str:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
-        raise ValueError("日期须为 YYYY-MM-DD 格式")
+        raise PydanticCustomError("date_format", "日期须为 YYYY-MM-DD 格式")
     try:
         date.fromisoformat(value)
     except ValueError as exc:
-        raise ValueError("日期无效") from exc
+        raise PydanticCustomError("date_invalid", "日期无效") from exc
     if not "1900-01-01" <= value <= "2100-12-31":
-        raise ValueError("日期须在 1900—2100 年内")
+        raise PydanticCustomError("date_range", "日期须在 1900—2100 年内")
     return value
 
 
@@ -125,13 +126,13 @@ class FeedbackBrief(Model):
     def normalize_subjects(cls, values: list[str]) -> list[str]:
         normalized = [nonblank(value).strip() for value in values]
         if len(set(normalized)) != len(normalized):
-            raise ValueError("学科不能重复")
+            raise PydanticCustomError("subjects_duplicate", "学科不能重复")
         return normalized
 
     @model_validator(mode="after")
     def validate_period(self) -> Self:
         if not "1900-01-01" <= self.periodStart <= self.periodEnd <= "2100-12-31":
-            raise ValueError("反馈日期须在 1900—2100 年内，且开始日期不能晚于结束日期")
+            raise PydanticCustomError("feedback_period_order", "反馈日期须在 1900—2100 年内，且开始日期不能晚于结束日期")
         return self
 
     def has_text(self) -> bool:
@@ -156,7 +157,7 @@ class StudentObservations(Model):
         for key, value in values.items():
             key = nonblank(key).strip()
             if key in normalized:
-                raise ValueError("分学科事实的学科名称不能重复")
+                raise PydanticCustomError("subjects_duplicate", "分学科事实的学科名称不能重复")
             normalized[key] = value
         return normalized
 
@@ -316,7 +317,7 @@ class AISettingsUpdate(Model):
     @model_validator(mode="after")
     def reject_conflicting_key(self) -> Self:
         if self.clearApiKey and self.apiKey:
-            raise ValueError("不能同时设置与删除 API Key")
+            raise PydanticCustomError("api_key_conflict", "不能同时设置与删除 API Key")
         return self
 
 
@@ -334,8 +335,8 @@ class GenerateRequest(Model):
             self.observations.difficulties, *self.observations.subjects.values(),
         )):
             if self.module == "one-to-one":
-                raise ValueError("请先填写这位学生在本次课的实际观察，不能仅凭课程内容或课后任务生成反馈")
-            raise ValueError("请先填写这位学生的实际观察，不能仅凭共用内容生成个人反馈")
+                raise PydanticCustomError("personal_facts_required", "请先填写这位学生在本次课的实际观察，不能仅凭课程内容或课后任务生成反馈")
+            raise PydanticCustomError("personal_facts_required", "请先填写这位学生的实际观察，不能仅凭共用内容生成个人反馈")
         return self
 
 

@@ -25,7 +25,6 @@ import {
   formatClassFeedback,
   formatFeedbackPeriod,
   formatStudentFeedback,
-  isValidLessonAt,
 } from "./feedback";
 import {
   canApplyGeneration,
@@ -33,6 +32,7 @@ import {
   emptyObservations,
   entryIsStale,
   feedbackSnapshot,
+  feedbackInputErrors,
   generationSignature,
   hasFeedbackContent,
   hasObservations,
@@ -443,55 +443,20 @@ export default function FeedbackWorkspace({
   function validateContext(): boolean {
     const current = draftRef.current;
     const brief = current.brief!;
-    if (
-      !isValidLessonAt(current.lessonAt) ||
-      !isValidLessonAt(`${brief.periodStart}T00:00`) ||
-      !isValidLessonAt(`${brief.periodEnd}T00:00`) ||
-      brief.periodEnd < brief.periodStart
-    ) {
-      setStatus({
-        text: "请填写有效的时间，周期结束日期不能早于开始日期。",
-        error: true,
-      });
-      return false;
-    }
-    if (
-      brief.subjects.length > 10 ||
-      brief.subjects.some((subject) => subject.length > 50)
-    ) {
-      setStatus({
-        text: "最多填写 10 个科目，每个科目名称不超过 50 字。",
-        error: true,
-      });
-      return false;
-    }
-    if (
-      [brief.teachingContent, brief.commonTasks, brief.focus].some(
-        (value) => value.length > 5000,
-      )
-    ) {
-      setStatus({ text: "每项课程信息不能超过 5000 字。", error: true });
+    const contextErrors = feedbackInputErrors({ module, brief }, { lessonAt: current.lessonAt });
+    if (contextErrors.length) {
+      setStatus({ text: contextErrors.join(" "), error: true });
       return false;
     }
     for (const entry of current.entries) {
-      const notes = normalizeObservations(entry.observations);
-      if (
-        Object.keys(notes.subjects).length > 10 ||
-        Object.keys(notes.subjects).some(
-          (subject) => !subject.trim() || subject.length > 50,
-        ) ||
-        [
-          notes.performance,
-          notes.strengths,
-          notes.difficulties,
-          notes.plan,
-          ...Object.values(notes.subjects),
-        ].some((value) => value.length > 2000) ||
-        notes.tasks.length > 8000 ||
-        entry.content.length > 10000
-      ) {
+      const errors = feedbackInputErrors({
+        module, brief, observations: normalizeObservations(entry.observations),
+      });
+      if (entry.content.length > 10000) errors.push("反馈正文不能超过 10000 字，请精简正文。");
+      if (errors.length) {
+        const student = studentsRef.current.find((item) => item.id === entry.studentId);
         setStatus({
-          text: "最多记录 10 个科目，每条课堂记录不超过 2000 字，课后任务不超过 8000 字，反馈正文不超过 10000 字。请检查并精简后重试。",
+          text: `${student ? `${student.name}：` : ""}${errors.join(" ")}`,
           error: true,
         });
         return false;
@@ -1143,6 +1108,7 @@ export default function FeedbackWorkspace({
                 {!readonly && (
                   <FeedbackSuggestions
                     key={`${draft.id}-${selected.id}`}
+                    lessonAt={draft.lessonAt}
                     input={{
                       module,
                       brief: activeBrief,

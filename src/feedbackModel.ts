@@ -5,6 +5,7 @@ import type {
   ModuleId,
   StudentObservations,
 } from "./types";
+import { isValidLessonAt } from "./feedback";
 
 export function emptyObservations(): StudentObservations {
   return {
@@ -119,6 +120,72 @@ export function hasPersonalFacts(observations?: StudentObservations): boolean {
     observations.difficulties,
     ...Object.values(observations.subjects),
   ].some((value) => value.trim());
+}
+
+/** Share the API's editable-field limits without requiring optional course notes. */
+export function feedbackInputErrors(
+  input: {
+    module: ModuleId;
+    brief: FeedbackBrief;
+    observations?: StudentObservations;
+    grade?: string;
+    styleReference?: string;
+  },
+  options: { lessonAt?: string; requirePersonalFacts?: boolean } = {},
+): string[] {
+  const { module, brief, observations } = input;
+  const errors: string[] = [];
+  const startValid = isValidLessonAt(`${brief.periodStart}T00:00`);
+  const endValid = isValidLessonAt(`${brief.periodEnd}T00:00`);
+  if (module === "one-to-one") {
+    if (!startValid || !endValid ||
+      (options.lessonAt !== undefined && !isValidLessonAt(options.lessonAt))) {
+      errors.push("请填写有效的上课时间（1900—2100 年），日期和时分都要完整。");
+    } else if (brief.periodEnd < brief.periodStart) {
+      errors.push("上课时间对应的日期范围不正确，请重新选择上课时间。");
+    }
+  } else {
+    if (!startValid || (options.lessonAt !== undefined && !isValidLessonAt(options.lessonAt)))
+      errors.push("请填写有效的周期开始日期（1900—2100 年）。");
+    if (!endValid) errors.push("请填写有效的周期结束日期（1900—2100 年）。");
+    if (startValid && endValid && brief.periodEnd < brief.periodStart)
+      errors.push("周期结束日期不能早于周期开始日期，请调整这两个日期。");
+  }
+  const checkSubjects = (names: string[], label: string) => {
+    if (names.length > 10) errors.push(`${label}最多填写 10 个。`);
+    if (names.some((name) => !name.trim() || name.length > 50))
+      errors.push(`${label}名称不能为空，每个名称最多 50 字。`);
+    if (new Set(names.map((name) => name.trim())).size !== names.length)
+      errors.push(`${label}名称不能重复，请合并重复的科目。`);
+  };
+  checkSubjects(brief.subjects, "科目");
+  const fields: [string, string, number][] = [
+    ["教学 / 学习内容", brief.teachingContent, 5000],
+    [module === "course" ? "全班安排 / 共性提醒" : module === "one-to-one" ? "课后任务" : "共同课后任务", brief.commonTasks, 5000],
+    ["反馈表达重点", brief.focus, 5000],
+  ];
+  if (observations) {
+    fields.push(
+      [module === "one-to-one" ? "课堂状态与掌握情况" : "本次情况", observations.performance, 2000],
+      ["值得肯定", observations.strengths, 2000],
+      ["需要关注", observations.difficulties, 2000],
+      ["下一步建议", observations.plan, 2000],
+      [module === "one-to-one" ? "课后任务" : "个人任务", observations.tasks, 8000],
+    );
+    checkSubjects(Object.keys(observations.subjects), "个人观察中的科目");
+    Object.values(observations.subjects).forEach((content, index) => {
+      fields.push([`第 ${index + 1} 个科目的个人观察`, content, 2000]);
+    });
+  }
+  for (const [label, value, limit] of fields)
+    if (value.length > limit) errors.push(`${label}不能超过 ${limit} 字，请精简这栏内容。`);
+  if (input.grade !== undefined && input.grade.length > 50)
+    errors.push("学生档案中的年级不能超过 50 字，请先修改档案。");
+  if (input.styleReference !== undefined && input.styleReference.length > 12000)
+    errors.push("个人风格参考不能超过 12000 字，请精简后保存。");
+  if (options.requirePersonalFacts && !hasPersonalFacts(observations))
+    errors.push("先写一条真实观察，例如课堂情况、亮点、困难或学科记录。仅有后续计划或任务还不能生成推荐。");
+  return errors;
 }
 
 export function hasBriefContent(brief?: FeedbackBrief): boolean {

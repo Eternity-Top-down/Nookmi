@@ -14,6 +14,7 @@ from .routes.ai import router as ai_router
 from .routes.workspace import router as workspace_router
 from .services.provider import AIProvider
 from .services.settings import SettingsStore
+from .services.validation import validation_detail
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -35,7 +36,7 @@ def local_url(value: str, *, host_only: bool = False) -> bool:
 
 def create_app(data_dir: str | Path | None = None) -> FastAPI:
     directory = Path(data_dir or os.environ.get("NOOKMI_DATA_DIR") or Path(__file__).resolve().parents[2] / ".local")
-    app = FastAPI(title="Nookmi local API", version="0.4.0", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Nookmi local API", version="0.4.1", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.database = Database(directory)
     app.state.settings = SettingsStore(directory)
     app.state.provider = AIProvider(app.state.settings)
@@ -70,10 +71,10 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
         return response
 
     @app.exception_handler(RequestValidationError)
-    async def invalid_request(_request: Request, _error: RequestValidationError):
+    async def invalid_request(request: Request, error: RequestValidationError):
         # Pydantic's default detail includes rejected input, which could be an API key.
         return JSONResponse(
-            {"detail": "输入格式不正确，请检查必填项、日期、长度、所属关系及学生事实。"},
+            {"detail": validation_detail(request.url.path, error.errors())},
             status_code=422,
         )
 

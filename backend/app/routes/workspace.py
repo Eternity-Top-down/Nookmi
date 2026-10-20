@@ -9,8 +9,8 @@ router = APIRouter(prefix="/api")
 
 
 @router.get("/health")
-def health():
-    return {"ok": True, "service": "nookmi", "storage": "sqlite"}
+def health(request: Request):
+    return {"ok": True, "service": "nookmi", "storage": "sqlite", "version": request.app.version}
 
 
 @router.get("/workspace")

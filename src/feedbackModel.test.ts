@@ -6,6 +6,7 @@ import {
   emptyObservations,
   entryIsStale,
   feedbackSnapshot,
+  feedbackInputErrors,
   generationSignature,
   hasFeedbackContent,
   hasObservations,
@@ -15,7 +16,7 @@ import {
   outlineFeedback,
   sortFeedbackByRecentEdit,
 } from "./feedbackModel";
-import type { FeedbackSession } from "./types";
+import type { FeedbackSession, ModuleId } from "./types";
 
 function fixture(): FeedbackSession {
   return {
@@ -36,6 +37,105 @@ function fixture(): FeedbackSession {
     updatedAt: "2026-10-21T10:00:00.000Z",
   };
 }
+
+describe("shared feedback input validation", () => {
+  function input(module: ModuleId = "one-to-one") {
+    return {
+      module, grade: "初二", styleReference: "",
+      brief: defaultBrief(module, ["初二"], new Date(2026, 9, 21)),
+      observations: { ...emptyObservations(), performance: "能独立列出方程" },
+    };
+  }
+
+  it("allows empty optional course fields and never mutates the teacher's notes", () => {
+    const value = input();
+    value.brief.subjects = [];
+    const before = structuredClone(value);
+    expect(feedbackInputErrors(value, { lessonAt: "2026-10-21T18:30", requirePersonalFacts: true })).toEqual([]);
+    expect(value).toEqual(before);
+  });
+
+  it.each(["", "2026-10-21", "2026-02-29T18:30", "1899-12-31T18:30", "2101-01-01T00:00", "2026-10-21T24:00"])("locates an invalid lesson time %s", (lessonAt) => {
+    expect(feedbackInputErrors(input(), { lessonAt })[0]).toContain("上课时间");
+  });
+
+  it.each(["evening", "course"] as const)("identifies the invalid side of a %s period and rejects reverse ranges", (module) => {
+    const value = input(module);
+    const start = value.brief.periodStart;
+    value.brief.periodStart = "";
+    expect(feedbackInputErrors(value)).toEqual([expect.stringContaining("周期开始")]);
+    value.brief.periodStart = start;
+    value.brief.periodEnd = "2026-02-30";
+    expect(feedbackInputErrors(value)).toEqual([expect.stringContaining("周期结束")]);
+    value.brief.periodEnd = "2026-01-01";
+    expect(feedbackInputErrors(value)).toEqual([expect.stringContaining("周期结束日期不能早于周期开始日期")]);
+    value.brief.periodEnd = value.brief.periodStart;
+    expect(feedbackInputErrors(value)).toEqual([]);
+  });
+
+  it("accepts leap days and valid boundary years", () => {
+    const value = input();
+    for (const day of ["1900-01-01", "2024-02-29", "2100-12-31"]) {
+      value.brief.periodStart = day;
+      value.brief.periodEnd = day;
+      expect(feedbackInputErrors(value, { lessonAt: `${day}T23:59` })).toEqual([]);
+    }
+  });
+
+  it("checks subject count, blank names, and duplicates after trimming", () => {
+    const value = input("evening");
+    value.brief.subjects = Array.from({ length: 11 }, (_, i) => `科目${i}`);
+    expect(feedbackInputErrors(value)).toContain("科目最多填写 10 个。");
+    value.brief.subjects = ["数学", " 数学 "];
+    expect(feedbackInputErrors(value)).toContain("科目名称不能重复，请合并重复的科目。");
+    value.brief.subjects = [" ", "字".repeat(51)];
+    expect(feedbackInputErrors(value)).toContain("科目名称不能为空，每个名称最多 50 字。");
+    value.brief.subjects = ["数学"];
+    value.observations.subjects = { "数学": "观察", " 数学 ": "第二条观察" };
+    expect(feedbackInputErrors(value)).toContain("个人观察中的科目名称不能重复，请合并重复的科目。");
+  });
+
+  it("names each oversized text field while accepting every exact limit", () => {
+    const value = input();
+    value.brief.teachingContent = "字".repeat(5000);
+    value.brief.commonTasks = "字".repeat(5000);
+    value.brief.focus = "字".repeat(5000);
+    value.observations = {
+      performance: "字".repeat(2000), strengths: "字".repeat(2000),
+      difficulties: "字".repeat(2000), plan: "字".repeat(2000),
+      tasks: "字".repeat(8000), subjects: { 数学: "字".repeat(2000) },
+    };
+    value.grade = "字".repeat(50);
+    value.styleReference = "字".repeat(12000);
+    expect(feedbackInputErrors(value, { requirePersonalFacts: true })).toEqual([]);
+    const cases = [
+      ["教学 / 学习内容", (v: typeof value) => { v.brief.teachingContent += "多"; }],
+      ["反馈表达重点", (v: typeof value) => { v.brief.focus += "多"; }],
+      ["课堂状态与掌握情况", (v: typeof value) => { v.observations.performance += "多"; }],
+      ["值得肯定", (v: typeof value) => { v.observations.strengths += "多"; }],
+      ["需要关注", (v: typeof value) => { v.observations.difficulties += "多"; }],
+      ["下一步建议", (v: typeof value) => { v.observations.plan += "多"; }],
+      ["课后任务", (v: typeof value) => { v.observations.tasks += "多"; }],
+      ["第 1 个科目的个人观察", (v: typeof value) => { v.observations.subjects["数学"] += "多"; }],
+      ["年级", (v: typeof value) => { v.grade += "多"; }],
+      ["个人风格参考", (v: typeof value) => { v.styleReference += "多"; }],
+    ] as const;
+    for (const [label, change] of cases) {
+      const changed = structuredClone(value);
+      change(changed);
+      expect(feedbackInputErrors(changed)).toEqual([expect.stringContaining(label)]);
+    }
+  });
+
+  it("lets plans be saved but requires personal observations for AI", () => {
+    const value = input();
+    value.observations = { ...emptyObservations(), plan: "下次检查变号", tasks: "完成练习" };
+    expect(feedbackInputErrors(value)).toEqual([]);
+    expect(feedbackInputErrors(value, { requirePersonalFacts: true })).toEqual([expect.stringContaining("先写一条真实观察")]);
+    value.observations.subjects = { 数学: "能独立列式" };
+    expect(feedbackInputErrors(value, { requirePersonalFacts: true })).toEqual([]);
+  });
+});
 
 describe("one-on-one lesson task compatibility", () => {
   function lesson(commonTasks = "", tasks = ""): FeedbackSession {

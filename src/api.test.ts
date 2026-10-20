@@ -181,6 +181,25 @@ describe("AI observation suggestion API", () => {
     await expect(suggestFeedback(input)).rejects.toMatchObject({ status: 503, message: "请先配置 AI 服务。" });
   });
 
+  it.each([
+    ["application/json", JSON.stringify({ detail: "Not Found" })],
+    ["text/html", "<html><body>Not Found</body></html>"],
+  ])("explains a missing local suggestions route for a %s response", async (contentType, body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
+      status: 404,
+      headers: { "content-type": contentType },
+    })));
+    const error = await suggestFeedback(input).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 404,
+      message: expect.stringContaining("后端可能仍在运行旧版本"),
+    });
+    expect((error as ApiError).message).toContain("保留当前输入");
+    expect((error as ApiError).message).toContain("重新启动工作台");
+    expect((error as ApiError).message).not.toContain("Not Found");
+  });
+
   it("aborts an active recommendation request when the caller cancels", async () => {
     const controller = new AbortController();
     let signal: AbortSignal | undefined;

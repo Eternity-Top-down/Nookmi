@@ -6,11 +6,12 @@ import {
   type FeedbackSuggestionField,
   type GenerateRequest,
 } from "./api";
-import { hasPersonalFacts } from "./feedbackModel";
+import { feedbackInputErrors } from "./feedbackModel";
 import "./FeedbackSuggestions.css";
 
 interface Props {
   input: GenerateRequest;
+  lessonAt?: string;
   disabled?: boolean;
   onApply: (field: FeedbackSuggestionField, text: string) => void;
   onBusyChange?: (busy: boolean) => void;
@@ -24,9 +25,9 @@ const LABELS: Record<FeedbackSuggestionField, string> = {
 };
 
 // Compare all request fields; object insertion order alone must not invalidate a request.
-export function suggestionInputKey(input: GenerateRequest): string {
+export function suggestionInputKey(input: GenerateRequest, lessonAt = ""): string {
   return JSON.stringify([
-    input.module, input.grade, input.styleReference ?? "",
+    input.module, input.grade, input.styleReference ?? "", lessonAt,
     input.brief.periodStart, input.brief.periodEnd, input.brief.subjects,
     input.brief.teachingContent, input.brief.commonTasks, input.brief.focus,
     input.brief.length,
@@ -77,10 +78,11 @@ export function suggestionsReducer(state: SuggestionsState, action: SuggestionsA
   return { ...state, suggestions: [], notice: "已交给对应记录栏，请核对内容。本轮候选已清空。" };
 }
 
-export default function FeedbackSuggestions({ input, disabled = false, onApply, onBusyChange }: Props) {
+export default function FeedbackSuggestions({ input, lessonAt, disabled = false, onApply, onBusyChange }: Props) {
   const titleId = useId();
   const hintId = useId();
-  const inputKey = suggestionInputKey(input);
+  const validationId = useId();
+  const inputKey = suggestionInputKey(input, lessonAt);
   const [state, dispatch] = useReducer(suggestionsReducer, inputKey, createSuggestionsState);
   const latestKey = useRef(inputKey);
   const disabledRef = useRef(disabled);
@@ -91,8 +93,8 @@ export default function FeedbackSuggestions({ input, disabled = false, onApply, 
   const sequence = useRef(0);
   const active = useRef<{ key: string; id: number; controller: AbortController } | null>(null);
   const applied = useRef<number | null>(null);
-  const hasFacts = hasPersonalFacts(input.observations);
-  const visible = state.key === inputKey && !disabled;
+  const validationErrors = feedbackInputErrors(input, { lessonAt, requirePersonalFacts: true });
+  const visible = state.key === inputKey && !disabled && !validationErrors.length;
   const busy = visible && state.busy;
 
   useEffect(() => {
@@ -121,7 +123,7 @@ export default function FeedbackSuggestions({ input, disabled = false, onApply, 
   }, []);
 
   async function getSuggestions() {
-    if (disabled || !hasFacts || active.current) return;
+    if (disabled || validationErrors.length || active.current) return;
     const request = { key: inputKey, id: ++sequence.current, controller: new AbortController() };
     active.current = request;
     dispatch({ type: "start", key: request.key, requestId: request.id });
@@ -157,11 +159,13 @@ export default function FeedbackSuggestions({ input, disabled = false, onApply, 
         {busy ? <button type="button" className="button button-ghost button-sm" onClick={cancel}><X size={14} aria-hidden="true" />取消</button> : null}
       </div>
       <p className="feedback-suggestions-hint" id={hintId}>只参考已有事实改写和提出后续建议，不推断实际表现。请教师核对，点击后才加入记录。</p>
-      <button type="button" className="button button-secondary button-sm feedback-suggestions-request" disabled={disabled || !hasFacts || busy} aria-describedby={hintId} onClick={() => void getSuggestions()}>
+      <button type="button" className="button button-secondary button-sm feedback-suggestions-request" disabled={disabled || validationErrors.length > 0 || busy} aria-describedby={`${hintId} ${validationId}`} onClick={() => void getSuggestions()}>
         {busy ? <LoaderCircle className="feedback-suggestions-spinner" size={15} aria-hidden="true" /> : <Sparkles size={15} aria-hidden="true" />}
         {busy ? "正在获取推荐…" : "根据已填事实获取推荐"}
       </button>
-      {!hasFacts && <p className="feedback-suggestions-empty">先写一条真实观察，例如课堂情况、亮点、困难或学科记录。仅有后续计划或任务还不能生成推荐。</p>}
+      <div id={validationId} aria-live="polite">
+        {validationErrors.map((message) => <p className="feedback-suggestions-error" key={message}>{message}</p>)}
+      </div>
       <div aria-live="polite" aria-atomic="true">
         {visible && state.error && <p className="feedback-suggestions-error" role="alert">{state.error}</p>}
         {visible && state.notice && <p className="feedback-suggestions-notice">{state.notice}</p>}

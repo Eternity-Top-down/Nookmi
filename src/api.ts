@@ -31,6 +31,12 @@ async function request<T>(
       headers: { "Content-Type": "application/json", ...options.headers },
       signal: controller.signal,
     });
+    if (path === "/ai/suggestions" && response.status === 404) {
+      throw new ApiError(
+        "未找到 AI 推荐记录接口，后端可能仍在运行旧版本。请保留当前输入并重新启动工作台后重试；若仍未恢复，请更新工作台。",
+        response.status,
+      );
+    }
     if (!response.headers.get("content-type")?.includes("application/json")) {
       throw new ApiError(
         "后端没有返回有效数据，请确认 Python 服务已启动。",

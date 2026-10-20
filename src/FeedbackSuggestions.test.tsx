@@ -54,6 +54,34 @@ describe("AI observation suggestions presentation", () => {
     input.observations.performance = "能独立列出方程";
     expect(renderToStaticMarkup(<FeedbackSuggestions input={input} disabled onApply={() => {}} />)).toMatch(/<button[^>]*disabled=""/);
   });
+
+  it("locates a cleared lesson time, then enables recommendations immediately after correction", () => {
+    const input = request();
+    input.observations.performance = "能独立列出方程";
+    const before = structuredClone(input);
+    const invalid = renderToStaticMarkup(<FeedbackSuggestions input={input} lessonAt="" onApply={() => {}} />);
+    expect(invalid).toContain("请填写有效的上课时间");
+    expect(invalid).toMatch(/<button[^>]*disabled=""/);
+    const corrected = renderToStaticMarkup(<FeedbackSuggestions input={input} lessonAt="2026-10-21T18:30" onApply={() => {}} />);
+    expect(corrected).not.toContain("请填写有效的上课时间");
+    expect(corrected).not.toMatch(/<button[^>]*disabled=""/);
+    expect(input).toEqual(before);
+  });
+
+  it("shows all specific period, subject, and personal-record issues before a request can be sent", () => {
+    const input = request();
+    input.module = "evening";
+    input.brief.periodStart = "2026-10-25";
+    input.brief.periodEnd = "2026-10-19";
+    input.brief.subjects = Array.from({ length: 11 }, (_, i) => `科目${i}`);
+    input.observations.difficulties = "字".repeat(2001);
+    const html = renderToStaticMarkup(<FeedbackSuggestions input={input} onApply={() => {}} />);
+    expect(html).toContain("周期结束日期不能早于周期开始日期");
+    expect(html).toContain("科目最多填写 10 个");
+    expect(html).toContain("需要关注不能超过 2000 字");
+    expect(html).toMatch(/<button[^>]*disabled=""/);
+    expect(html).not.toContain("输入格式不正确");
+  });
 });
 
 describe("suggestion results remain tied to the current request", () => {
@@ -113,6 +141,10 @@ describe("suggestion results remain tied to the current request", () => {
 });
 
 describe("suggestion input identity", () => {
+  it("invalidates a request when lesson hours change without changing the day", () => {
+    const input = request();
+    expect(suggestionInputKey(input, "2026-10-21T18:30")).not.toBe(suggestionInputKey(input, "2026-10-21T19:30"));
+  });
   it.each([
     ["module", (value: GenerateRequest) => { value.module = "evening"; }],
     ["grade", (value: GenerateRequest) => { value.grade = "初三"; }],

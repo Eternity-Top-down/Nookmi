@@ -26,6 +26,7 @@ from backend.app.main import create_app  # noqa: E402
 from backend.app.services.provider import AIProvider  # noqa: E402
 from backend.app.schemas import FeedbackSession, GenerateRequest  # noqa: E402
 from backend.app.services.prompts import build_messages, build_suggestion_messages  # noqa: E402
+from backend.app.services.validation import validation_detail  # noqa: E402
 if _previous_data_dir is None:
     os.environ.pop("NOOKMI_DATA_DIR", None)
 else:
@@ -955,6 +956,148 @@ class SuggestionTests(ApiTestCase):
         response = self.client.post("/api/ai/suggestions", json=self.generate_input())
         self.assertEqual(response.status_code, 503)
         self.assertIn("AI 设置", response.json()["detail"])
+
+
+class ValidationMessageTests(ApiTestCase):
+    def assert_invalid(self, body, expected, path="/api/ai/suggestions"):
+        response = self.client.post(path, json=body)
+        self.assertEqual(response.status_code, 422, response.text)
+        for phrase in expected:
+            self.assertIn(phrase, response.json()["detail"])
+        self.assertEqual(set(response.json()), {"detail"})
+        return response.json()["detail"]
+
+    def test_health_reports_the_running_app_version(self):
+        self.assertEqual(self.client.get("/api/health").json()["version"], self.app.version)
+
+    def test_empty_optional_course_content_is_valid_for_generation_and_suggestions(self):
+        self.configure()
+        self.provider(lambda request: httpx.Response(200, json={"choices": [{"message": {"content": (
+            '{"suggestions":[{"field":"performance","text":"能说明运算步骤。"}]}'
+            if "唯一键为 suggestions" in json.loads(request.content)["messages"][0]["content"]
+            else "能说明运算步骤。"
+        )}}]}))
+        body = self.generate_input(brief=brief(), grade="", styleReference="")
+        for path in ("/api/ai/generate", "/api/ai/suggestions"):
+            self.assertEqual(self.client.post(path, json=body).status_code, 200)
+
+    def test_invalid_and_missing_dates_identify_the_date_field(self):
+        for field, label in (("periodStart", "反馈开始日期"), ("periodEnd", "反馈结束日期")):
+            for value in ("", "2026-02-30", "1899-12-31", "2101-01-01", "2026-10-21T00:00", None):
+                with self.subTest(field=field, value=value):
+                    self.assert_invalid(self.generate_input(brief=brief(**{field: value})), [label, "有效日期"])
+        missing = self.generate_input()
+        del missing["brief"]["periodStart"]
+        self.assert_invalid(missing, ["缺少", "反馈开始日期"])
+
+    def test_reversed_period_has_a_specific_message_for_both_ai_actions(self):
+        body = self.generate_input(brief=brief(periodStart="2026-10-22", periodEnd="2026-10-21"))
+        for path, label in (("/api/ai/suggestions", "推荐记录"), ("/api/ai/generate", "生成反馈")):
+            self.assert_invalid(body, [label, "结束日期不能早于开始日期"], path)
+
+    def test_missing_personal_facts_explains_which_records_count(self):
+        for module in ("one-to-one", "evening", "course"):
+            body = self.generate_input(module, observations=observations(plan="已有计划", tasks="已有任务"), styleReference="历史范文")
+            for path in ("/api/ai/suggestions", "/api/ai/generate"):
+                detail = self.assert_invalid(body, ["真实观察", "课堂情况", "值得肯定", "需要关注", "分学科记录", "范文还不够"], path)
+                self.assertNotIn("已有计划", detail)
+                self.assertNotIn("已有任务", detail)
+                self.assertNotIn("历史范文", detail)
+
+    def test_course_subject_count_name_and_duplicates_have_specific_messages(self):
+        cases = [
+            ([str(index) for index in range(11)], ["科目", "最多 10 项"]),
+            (["字" * 51], ["科目名称", "50 字"]),
+            (["数学", " 数学 "], ["科目名称不能重复"]),
+            ([" "], ["科目名称不能为空"]),
+        ]
+        for subjects, expected in cases:
+            self.assert_invalid(self.generate_input(brief=brief(subjects=subjects)), expected)
+
+    def test_field_lengths_show_labels_and_correct_limits(self):
+        cases = [
+            (("brief", "teachingContent"), 5000, "教学 / 学习内容"),
+            (("brief", "commonTasks"), 5000, "课程安排 / 课后任务"),
+            (("brief", "focus"), 5000, "反馈重点"),
+            (("observations", "performance"), 2000, "课堂情况"),
+            (("observations", "strengths"), 2000, "值得肯定"),
+            (("observations", "difficulties"), 2000, "需要关注"),
+            (("observations", "plan"), 2000, "后续建议"),
+            (("observations", "tasks"), 8000, "课后任务"),
+            (("grade",), 50, "年级"),
+            (("styleReference",), 12000, "个人风格参考"),
+        ]
+        for fields, limit, label in cases:
+            with self.subTest(field=fields):
+                body = self.generate_input()
+                target = body
+                for field in fields[:-1]:
+                    target = target[field]
+                target[fields[-1]] = "字" * (limit + 1)
+                self.assert_invalid(body, [label, f"{limit} 字"])
+
+    def test_dynamic_subject_keys_and_extra_field_names_never_echo_sensitive_values(self):
+        for subjects, expected in (
+            ({KEY * 3: "记录"}, ["科目名称", "50 字"]),
+            ({KEY: "字" * 2001}, ["分学科记录内容", "2000 字"]),
+            ({KEY: 8}, ["分学科记录内容", "文本"]),
+            ({str(index): "记录" for index in range(11)}, ["分学科记录", "最多 10 项"]),
+        ):
+            detail = self.assert_invalid(self.generate_input(observations=observations(subjects=subjects)), expected)
+            self.assertNotIn(KEY, detail)
+        for path in ("/api/ai/suggestions", "/api/ai/generate"):
+            detail = self.assert_invalid({**self.generate_input(), KEY: KEY}, ["当前版本不支持的信息", "重新启动工作台"], path)
+            self.assertNotIn(KEY, detail)
+
+    def test_missing_and_wrong_types_identify_safe_fields(self):
+        missing = self.generate_input()
+        del missing["observations"]["performance"]
+        self.assert_invalid(missing, ["缺少", "课堂情况"])
+        self.assert_invalid(self.generate_input(brief=brief(teachingContent=5)), ["教学 / 学习内容", "必须是文本"])
+        self.assert_invalid(self.generate_input(styleReference=None), ["个人风格参考", "必须是文本"])
+        self.assert_invalid(self.generate_input(brief=brief(length="invalid")), ["反馈篇幅", "简短或适中"])
+
+    def test_settings_errors_are_actionable_without_exposing_keys_or_url_credentials(self):
+        cases = [
+            ({"baseUrl": "https://example.test", "model": "m", "apiKey": KEY + "\ninvalid"}, ["API Key", "空格、换行"]),
+            ({"baseUrl": "https://" + KEY + "@example.test", "model": "m"}, ["API 地址", "账号、密码"]),
+            ({"baseUrl": "http://example.test", "model": "m"}, ["API 地址", "HTTPS"]),
+            ({"baseUrl": "https://example.test", "model": "m", "apiKey": KEY, "clearApiKey": True}, ["不能同时", "API Key"]),
+            ({"baseUrl": "https://example.test", "model": KEY * 10}, ["模型名称", "200 字"]),
+        ]
+        for body, expected in cases:
+            response = self.client.put("/api/ai/settings", json=body)
+            self.assertEqual(response.status_code, 422)
+            self.assertNotIn(KEY, response.text)
+            for phrase in expected:
+                self.assertIn(phrase, response.json()["detail"])
+
+    def test_malformed_json_never_echoes_the_raw_request(self):
+        response = self.client.post("/api/ai/suggestions", content='{"secret":"' + KEY + '", broken}', headers={"Content-Type": "application/json"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("不是有效的 JSON", response.json()["detail"])
+        self.assertNotIn(KEY, response.text)
+
+    def test_validation_mapper_ignores_error_messages_context_and_arbitrary_paths(self):
+        class NeverRender:
+            def __str__(self):
+                raise AssertionError("validator context must never be rendered")
+
+        detail = validation_detail("/api/ai/suggestions", [{
+            "type": "value_error", "loc": ("body", KEY), "msg": KEY,
+            "input": KEY, "ctx": {"error": NeverRender()},
+        }])
+        self.assertNotIn(KEY, detail)
+        self.assertIn("该项信息格式不正确", detail)
+
+    def test_multiple_errors_are_bounded_and_do_not_repeat_the_same_message(self):
+        body = self.generate_input(
+            observations=observations(performance=5, strengths=5, difficulties=5, plan=5, tasks=5),
+        )
+        detail = self.assert_invalid(body, ["课堂情况", "值得肯定", "需要关注", "后续建议"])
+        self.assertNotIn("课后任务", detail)
+        detail = validation_detail("/api/ai/generate", [{"type": "extra_forbidden", "loc": ("body", KEY)}] * 10)
+        self.assertEqual(detail.count("当前版本不支持的信息"), 1)
 
 
 if __name__ == "__main__":

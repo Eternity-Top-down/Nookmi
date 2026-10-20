@@ -141,3 +141,33 @@ describe("feedback workspace style integration", () => {
     expect(html).toContain("AI 生成反馈");
   });
 });
+
+describe("feedback workspace recommendation validation", () => {
+  it("passes the complete lesson time to recommendation validation while preserving every record", () => {
+    const { session } = fixture("one-to-one");
+    session.lessonAt = "";
+    session.entries[0].observations!.performance = "教师尚未整理的真实观察";
+    session.entries[0].content = "已经写好的反馈正文";
+    const original = structuredClone(session);
+    const html = render("one-to-one", session);
+    const recommendation = /<section class="feedback-suggestions"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+    expect(recommendation).toContain("请填写有效的上课时间");
+    expect(recommendation).toMatch(/<button[^>]*disabled=""/);
+    expect(html).toContain("教师尚未整理的真实观察");
+    expect(html).toContain("已经写好的反馈正文");
+    expect(session).toEqual(original);
+  });
+
+  it.each(["evening", "course"] as const)("identifies a cleared period end for %s without requiring teaching content", (module) => {
+    const { session } = fixture(module);
+    session.entries[0].observations!.performance = "能独立完成练习";
+    session.brief!.periodEnd = "";
+    const invalid = render(module, session);
+    expect(invalid).toContain("请填写有效的周期结束日期");
+    session.brief!.periodEnd = session.brief!.periodStart;
+    const corrected = render(module, session);
+    const recommendation = /<section class="feedback-suggestions"[\s\S]*?<\/section>/.exec(corrected)?.[0] ?? "";
+    expect(recommendation).not.toMatch(/<button[^>]*disabled=""/);
+    expect(recommendation).not.toContain("请填写有效");
+  });
+});
