@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+*.log
+coverage/
+playwright-report/
+test-results/
+.local/
+backups/
+nookmi-backup-*.json
+*学生名单*
