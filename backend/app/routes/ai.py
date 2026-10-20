@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 
-from ..schemas import AISettingsUpdate, FeedbackSuggestions, GenerateRequest
-from ..services.prompts import build_messages, build_suggestion_messages, test_messages
+from ..schemas import AISettingsUpdate, GenerateRequest
+from ..services.prompts import build_messages, test_messages
 from ..services.provider import ProviderError
 from ..services.settings import SettingsUnavailable
 
@@ -37,13 +37,5 @@ def test_connection(request: Request):
 def generate_feedback(body: GenerateRequest, request: Request):
     try:
         return request.app.state.provider.complete(build_messages(body))
-    except ProviderError as error:
-        raise HTTPException(error.status, error.message) from None
-
-
-@router.post("/suggestions", response_model=FeedbackSuggestions)
-def suggest_expressions(body: GenerateRequest, request: Request):
-    try:
-        return request.app.state.provider.suggest(build_suggestion_messages(body))
     except ProviderError as error:
         raise HTTPException(error.status, error.message) from None

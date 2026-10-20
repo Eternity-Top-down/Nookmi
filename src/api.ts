@@ -31,12 +31,6 @@ async function request<T>(
       headers: { "Content-Type": "application/json", ...options.headers },
       signal: controller.signal,
     });
-    if (path === "/ai/suggestions" && response.status === 404) {
-      throw new ApiError(
-        "未找到 AI 推荐记录接口，后端可能仍在运行旧版本。请保留当前输入并重新启动工作台后重试；若仍未恢复，请更新工作台。",
-        response.status,
-      );
-    }
     if (!response.headers.get("content-type")?.includes("application/json")) {
       throw new ApiError(
         "后端没有返回有效数据，请确认 Python 服务已启动。",
@@ -133,49 +127,4 @@ export function generateFeedback(input: GenerateRequest, signal?: AbortSignal) {
     { method: "POST", body: JSON.stringify(input), signal },
     95000,
   );
-}
-
-export type FeedbackSuggestionField =
-  | "performance"
-  | "strengths"
-  | "difficulties"
-  | "plan";
-
-export interface FeedbackSuggestion {
-  field: FeedbackSuggestionField;
-  text: string;
-}
-
-export function parseFeedbackSuggestions(value: unknown): FeedbackSuggestion[] {
-  const invalid = () => new ApiError("AI 推荐记录返回格式不正确，请重试。", 502);
-  if (!value || typeof value !== "object" || !("suggestions" in value))
-    throw invalid();
-  const items = value.suggestions;
-  if (!Array.isArray(items) || items.length > 6) throw invalid();
-  const fields: readonly string[] = ["performance", "strengths", "difficulties", "plan"];
-  return items.map((item: unknown) => {
-    if (!item || typeof item !== "object" || !("field" in item) || !("text" in item))
-      throw invalid();
-    if (typeof item.field !== "string" || !fields.includes(item.field) ||
-      typeof item.text !== "string" || !item.text.trim() || item.text.length > 240)
-      throw invalid();
-    return { field: item.field as FeedbackSuggestionField, text: item.text.trim() };
-  });
-}
-
-export async function suggestFeedback(input: GenerateRequest, signal?: AbortSignal) {
-  // Explicit fields keep accidental student identity properties out of this request.
-  const payload: GenerateRequest = {
-    module: input.module,
-    brief: input.brief,
-    observations: input.observations,
-    grade: input.grade,
-    ...(input.styleReference === undefined ? {} : { styleReference: input.styleReference }),
-  };
-  const result = await request<unknown>(
-    "/ai/suggestions",
-    { method: "POST", body: JSON.stringify(payload), signal },
-    95000,
-  );
-  return { suggestions: parseFeedbackSuggestions(result) };
 }

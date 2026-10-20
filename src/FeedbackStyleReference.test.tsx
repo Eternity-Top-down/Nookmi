@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import FeedbackStyleReference, { createStyleReferenceState, styleReferenceReducer as reduce } from "./FeedbackStyleReference";
 import type { ModuleId } from "./types";
+import { styleDraftKey, type StyleDraft } from "./styleDrafts";
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("personal style reference card", () => {
   it.each<[ModuleId, string]>([["one-to-one", "一对一"], ["evening", "晚辅"], ["course", "班课"]])("labels the %s module reference independently", (module, label) => {
@@ -29,9 +32,40 @@ describe("personal style reference card", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
   });
+
+  it("opens a recovered local draft while leaving the database reference unsaved", () => {
+    const cached: StyleDraft = { version: 1, module: "course", draft: "刷新前未保存范文", baseSavedValue: "旧范文" };
+    vi.stubGlobal("window", { localStorage: { getItem: (key: string) => key === styleDraftKey("course") ? JSON.stringify(cached) : null } });
+    const save = vi.fn(async () => true);
+    const html = renderToStaticMarkup(<FeedbackStyleReference module="course" value="数据库新范文" onSave={save} />);
+    expect(html).toMatch(/<details[^>]*\bopen=""/);
+    expect(html).toContain("刷新前未保存范文");
+    expect(html).toContain("已恢复此浏览器未保存");
+    expect(html).toContain("加载最新参考");
+    expect(html).toContain("有未保存修改");
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("shows a storage warning instead of crashing when browser storage is denied", () => {
+    vi.stubGlobal("window", { get localStorage() { throw new Error("denied"); } });
+    const html = renderToStaticMarkup(<FeedbackStyleReference module="evening" value="数据库范文" onSave={async () => true} />);
+    expect(html).toContain("无法读取本机风格草稿");
+    expect(html).toContain("数据库范文");
+  });
 });
 
 describe("style reference draft protection", () => {
+  it("restores the original baseline and preserves a draft through newer database values", () => {
+    const recovered: StyleDraft = { version: 1, module: "course", draft: "未保存文字", baseSavedValue: "编辑前范文" };
+    const initial = createStyleReferenceState("数据库更新一", recovered);
+    expect(initial.draft).toBe("未保存文字");
+    expect(initial.savedValue).toBe("编辑前范文");
+    expect(initial.externalValue).toBe("数据库更新一");
+    const refreshed = reduce(initial, { type: "external", value: "数据库更新二" });
+    expect(refreshed.draft).toBe("未保存文字");
+    expect(refreshed.externalValue).toBe("数据库更新二");
+    expect(reduce(refreshed, { type: "discard" })).toEqual(createStyleReferenceState("数据库更新二"));
+  });
   it("adopts an external update only when there is no local draft", () => {
     const updated = reduce(createStyleReferenceState("原范文"), { type: "external", value: "最新范文" });
     expect(updated.draft).toBe("最新范文");

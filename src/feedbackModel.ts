@@ -184,7 +184,7 @@ export function feedbackInputErrors(
   if (input.styleReference !== undefined && input.styleReference.length > 12000)
     errors.push("个人风格参考不能超过 12000 字，请精简后保存。");
   if (options.requirePersonalFacts && !hasPersonalFacts(observations))
-    errors.push("先写一条真实观察，例如课堂情况、亮点、困难或学科记录。仅有后续计划或任务还不能生成推荐。");
+    errors.push("先写一条真实观察，例如课堂情况、亮点、困难或学科记录。仅有后续计划或任务还不能生成个人反馈。");
   return errors;
 }
 

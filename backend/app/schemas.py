@@ -338,17 +338,3 @@ class GenerateRequest(Model):
                 raise PydanticCustomError("personal_facts_required", "请先填写这位学生在本次课的实际观察，不能仅凭课程内容或课后任务生成反馈")
             raise PydanticCustomError("personal_facts_required", "请先填写这位学生的实际观察，不能仅凭共用内容生成个人反馈")
         return self
-
-
-class FeedbackSuggestion(Model):
-    field: Literal["performance", "strengths", "difficulties", "plan"]
-    text: Annotated[Text, Field(max_length=240), AfterValidator(nonblank)]
-
-    @field_validator("text")
-    @classmethod
-    def trim_text(cls, value: str) -> str:
-        return value.strip()
-
-
-class FeedbackSuggestions(Model):
-    suggestions: Annotated[list[FeedbackSuggestion], Field(min_length=1, max_length=6)]

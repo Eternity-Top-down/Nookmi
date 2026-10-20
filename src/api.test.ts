@@ -5,8 +5,6 @@ import {
   putWorkspace,
   saveAISettings,
   generateFeedback,
-  suggestFeedback,
-  parseFeedbackSuggestions,
 } from "./api";
 import { EMPTY_DATA } from "./data";
 import { defaultBrief, emptyObservations } from "./feedbackModel";
@@ -154,101 +152,5 @@ describe("Python API boundary", () => {
         controller.signal,
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
-  });
-});
-
-describe("AI observation suggestion API", () => {
-  const input = {
-    module: "evening" as const,
-    grade: "初二",
-    brief: defaultBrief("evening", ["初二"], new Date(2026, 9, 21)),
-    observations: { ...emptyObservations(), performance: "能独立列出方程" },
-    styleReference: "  我的晚辅参考风格  ",
-  };
-
-  it("posts the current module facts and style without sending student identity properties", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ suggestions: [{ field: "plan", text: "  建议检查变号步骤。  " }] }), { headers: { "content-type": "application/json" } }));
-    vi.stubGlobal("fetch", fetchMock);
-    const accidentalExtraFields = { ...input, studentName: "不应发送的姓名", studentId: "student-private" };
-    await expect(suggestFeedback(accidentalExtraFields)).resolves.toEqual({ suggestions: [{ field: "plan", text: "建议检查变号步骤。" }] });
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/ai/suggestions");
-    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(input);
-  });
-
-  it("shows the backend's setup error without substituting fabricated suggestions", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "请先配置 AI 服务。" }), { status: 503, headers: { "content-type": "application/json" } })));
-    await expect(suggestFeedback(input)).rejects.toMatchObject({ status: 503, message: "请先配置 AI 服务。" });
-  });
-
-  it.each([
-    ["application/json", JSON.stringify({ detail: "Not Found" })],
-    ["text/html", "<html><body>Not Found</body></html>"],
-  ])("explains a missing local suggestions route for a %s response", async (contentType, body) => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
-      status: 404,
-      headers: { "content-type": contentType },
-    })));
-    const error = await suggestFeedback(input).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(ApiError);
-    expect(error).toMatchObject({
-      status: 404,
-      message: expect.stringContaining("后端可能仍在运行旧版本"),
-    });
-    expect((error as ApiError).message).toContain("保留当前输入");
-    expect((error as ApiError).message).toContain("重新启动工作台");
-    expect((error as ApiError).message).not.toContain("Not Found");
-  });
-
-  it("aborts an active recommendation request when the caller cancels", async () => {
-    const controller = new AbortController();
-    let signal: AbortSignal | undefined;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((_, options: RequestInit) => new Promise((_, reject) => {
-      signal = options.signal as AbortSignal;
-      signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-    })));
-    const pending = expect(suggestFeedback(input, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
-    controller.abort();
-    await pending;
-    expect(signal?.aborted).toBe(true);
-  });
-
-  it("allows a model request 95 seconds and then gives a recoverable timeout", async () => {
-    vi.useFakeTimers();
-    let signal: AbortSignal | undefined;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((_, options: RequestInit) => new Promise((_, reject) => {
-      signal = options.signal as AbortSignal;
-      signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-    })));
-    const pending = expect(suggestFeedback(input)).rejects.toMatchObject({ status: 0, message: expect.stringContaining("超时") });
-    await vi.advanceTimersByTimeAsync(94999);
-    expect(signal?.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    await pending;
-    expect(signal?.aborted).toBe(true);
-  });
-
-  it("rejects malformed successful responses before they can enter the component", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ suggestions: [{ field: "constructor", text: "不合法分类" }] }), { headers: { "content-type": "application/json" } })));
-    await expect(suggestFeedback(input)).rejects.toMatchObject({ status: 502, message: expect.stringContaining("格式不正确") });
-  });
-
-  it.each([
-    null, [], {}, { suggestions: null }, { suggestions: "x" },
-    { suggestions: [null] }, { suggestions: ["x"] },
-    { suggestions: [{ field: "tasks", text: "不支持的分类" }] },
-    { suggestions: [{ field: "plan", text: null }] },
-    { suggestions: [{ field: "plan", text: "   " }] },
-    { suggestions: [{ field: "plan", text: "字".repeat(241) }] },
-    { suggestions: Array.from({ length: 7 }, () => ({ field: "plan", text: "建议" })) },
-  ])("rejects invalid suggestion data %#", (value) => {
-    expect(() => parseFeedbackSuggestions(value)).toThrow(ApiError);
-  });
-
-  it("accepts zero through six valid suggestions and preserves text as plain text", () => {
-    expect(parseFeedbackSuggestions({ suggestions: [] })).toEqual([]);
-    const valid = { suggestions: Array.from({ length: 6 }, () => ({ field: "plan", text: "<script>这是普通文本</script>" })) };
-    expect(parseFeedbackSuggestions(valid)).toEqual(valid.suggestions);
-    expect(parseFeedbackSuggestions({ suggestions: [{ field: "strengths", text: "字".repeat(240) }] })[0].text).toHaveLength(240);
   });
 });

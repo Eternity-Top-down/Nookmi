@@ -40,6 +40,8 @@ import { ClassForm, ImportStudents, Modal, StudentForm } from "./components";
 import FeedbackWorkspace from "./FeedbackWorkspace";
 import AISettings from "./AISettings";
 import { hasObservations } from "./feedbackModel";
+import { clearFeedbackDrafts, feedbackDraftScope, pruneStudentFeedbackDrafts } from "./feedbackDrafts";
+import { clearAllStyleDrafts } from "./styleDrafts";
 import { ApiError, getWorkspace, putWorkspace } from "./api";
 import {
   copyFeedbackText,
@@ -193,6 +195,8 @@ function StatCard({
 export default function App() {
   const [legacy] = useState(loadData);
   const [data, setData] = useState<AppData>(EMPTY_DATA);
+  const dataRef = useRef(data);
+  dataRef.current = data;
   const [storageError, setStorageError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [reloadAttempt, setReloadAttempt] = useState(0);
@@ -235,6 +239,7 @@ export default function App() {
       .then((result) => {
         if (!active) return;
         revision.current = result.revision;
+        dataRef.current = result.data;
         setData(result.data);
         setReady(true);
         setConflict(false);
@@ -257,8 +262,8 @@ export default function App() {
         setConfirmation({
           title: "当前反馈尚未完成",
           message:
-            "当前有未保存的修改或正在进行的生成。离开会放弃未保存内容并停止生成，可以取消后继续处理。",
-          label: "放弃修改并离开",
+            "当前有生成任务、未确认的风格修改，或本机草稿保存异常。请先检查保存提示；离开会停止生成。",
+          label: "继续离开",
           action: () => {
             feedbackDirty.current = false;
             setConfirmation(null);
@@ -365,8 +370,8 @@ export default function App() {
       setConfirmation({
         title: "当前反馈尚未完成",
         message:
-          "当前有未保存的修改或正在进行的生成。切换页面会放弃未保存内容并停止生成，可以取消后继续处理。",
-        label: "放弃修改并切换",
+          "当前有生成任务、未确认的风格修改，或本机草稿保存异常。请先检查保存提示；切换会停止生成。",
+        label: "继续切换",
         action: () => {
           feedbackDirty.current = false;
           setConfirmation(null);
@@ -375,20 +380,22 @@ export default function App() {
       });
     } else setActivePanel(next);
   }
-  async function saveFeedback(session: FeedbackSession) {
+  async function saveFeedback(session: FeedbackSession, automatic = false) {
+    if (conflict) return false;
     return persist(
-      {
-        ...data,
-        feedbackSessions: feedbackSessions.some((s) => s.id === session.id)
-          ? feedbackSessions.map((s) => (s.id === session.id ? session : s))
-          : [...feedbackSessions, session],
-      },
+      (current) => ({
+        ...current,
+        feedbackSessions: (current.feedbackSessions ?? []).some((s) => s.id === session.id)
+          ? current.feedbackSessions!.map((s) => (s.id === session.id ? session : s))
+          : [...(current.feedbackSessions ?? []), session],
+      }),
       "本次课程反馈已保存",
+      automatic,
     );
   }
   async function saveFeedbackStyle(module: ModuleId, reference: string) {
     return persist(
-      { ...data, feedbackStyles: { ...data.feedbackStyles, [module]: reference } },
+      (current) => ({ ...current, feedbackStyles: { ...current.feedbackStyles, [module]: reference } }),
       `${MODULES[module].title}的个人风格参考已保存`,
     );
   }
@@ -440,9 +447,9 @@ export default function App() {
       </div>
     );
   }
-  async function persist(next: AppData, message: string) {
+  async function persist(next: AppData | ((current: AppData) => AppData), message: string, silent = false) {
     if (!ready || storageError) {
-      setToast({
+      if (!silent) setToast({
         message: "请先连接本地数据库，再保存数据。",
         error: true,
       });
@@ -452,8 +459,9 @@ export default function App() {
     savingLock.current = true;
     setSaving(true);
     try {
-      const saved = await putWorkspace(next, revision.current);
+      const saved = await putWorkspace(typeof next === "function" ? next(dataRef.current) : next, revision.current);
       revision.current = saved.revision;
+      dataRef.current = saved.data;
       setData(saved.data);
       setConflict(false);
       setSavedAt(
@@ -462,11 +470,11 @@ export default function App() {
           minute: "2-digit",
         }),
       );
-      setToast({ message });
+      if (!silent) setToast({ message });
       return true;
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) setConflict(true);
-      setToast({
+      if (!silent) setToast({
         message:
           error instanceof Error
             ? error.message
@@ -478,6 +486,11 @@ export default function App() {
       savingLock.current = false;
       setSaving(false);
     }
+  }
+  function clearRecoveredInputs(scope?: string) {
+    const feedback = clearFeedbackDrafts(scope);
+    const styleError = scope === undefined ? clearAllStyleDrafts() : null;
+    if (!feedback.ok || styleError) setToast({ message: feedback.error ?? styleError ?? "本机草稿未能清理。", error: true });
   }
   async function saveStudent(fields: StudentFields, editing?: Student) {
     const now = new Date().toISOString();
@@ -571,18 +584,20 @@ export default function App() {
       action: async () => {
         if (
           await persist(
-            {
-              ...data,
-              students: data.students.filter((s) => s.id !== target.id),
-              records: data.records.filter((r) => r.studentId !== target.id),
+            (current) => ({
+              ...current,
+              students: current.students.filter((s) => s.id !== target.id),
+              records: current.records.filter((r) => r.studentId !== target.id),
               feedbackSessions: pruneFeedbackForStudent(
-                feedbackSessions,
+                current.feedbackSessions ?? [],
                 target.id,
               ),
-            },
+            }),
             "学生已删除",
           )
         ) {
+          const pruned = pruneStudentFeedbackDrafts(target.module, target.classId, target.id);
+          if (!pruned.ok) setToast({ message: pruned.error ?? "本机草稿未能清理。", error: true });
           setConfirmation(null);
           feedbackDirty.current = false;
           navigate({ module: route.module, classId: group?.id });
@@ -602,18 +617,20 @@ export default function App() {
       action: async () => {
         if (
           await persist(
-            {
-              ...data,
-              classes: data.classes.filter((c) => c.id !== target.id),
-              students: data.students.filter((s) => !ids.has(s.id)),
-              records: data.records.filter((r) => !ids.has(r.studentId)),
-              feedbackSessions: feedbackSessions.filter(
-                (s) => s.classId !== target.id,
-              ),
+            (current) => {
+              const currentIds = new Set(current.students.filter((s) => s.classId === target.id).map((s) => s.id));
+              return {
+                ...current,
+                classes: current.classes.filter((c) => c.id !== target.id),
+                students: current.students.filter((s) => !currentIds.has(s.id)),
+                records: current.records.filter((r) => !currentIds.has(r.studentId)),
+                feedbackSessions: (current.feedbackSessions ?? []).filter((s) => s.classId !== target.id),
+              };
             },
             "班级已删除",
           )
         ) {
+          clearRecoveredInputs(feedbackDraftScope(target.module, target.id, null));
           setConfirmation(null);
           feedbackDirty.current = false;
           navigate({ module: route.module });
@@ -648,6 +665,7 @@ export default function App() {
         label: "确认替换并恢复",
         action: async () => {
           if (await persist(restored, "数据备份已恢复")) {
+            clearRecoveredInputs();
             setConfirmation(null);
             feedbackDirty.current = false;
             setWorkspaceEpoch((value) => value + 1);
@@ -680,8 +698,8 @@ export default function App() {
       setConfirmation({
         title: "重新读取数据库？",
         message:
-          "当前编辑区还有未保存的内容，请先复制留存。继续会放弃这些修改，读取数据库中的最新记录。",
-        label: "放弃修改并重新读取",
+          "将重新读取数据库。已暂存的本机草稿仍可恢复；如果保存提示异常，请先复制留存文字。",
+        label: "重新读取并保留本机草稿",
         action: reload,
       });
     } else reload();
@@ -830,10 +848,24 @@ export default function App() {
                         </span>
                       </td>
                       <td>
-                        <span className="row-feedback-link">
-                          {group ? "查看反馈" : "填写反馈"}
-                          <ArrowRight size={15} />
-                        </span>
+                        <div className="section-actions">
+                          <span className="row-feedback-link">
+                            {group ? "查看反馈" : "填写反馈"}
+                            <ArrowRight size={15} />
+                          </span>
+                          <button
+                            type="button"
+                            className="button button-ghost button-sm danger-text"
+                            aria-label={`删除学生${s.name}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              deleteStudent(s);
+                            }}
+                          >
+                            <Trash2 size={15} aria-hidden="true" />
+                            删除
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1172,6 +1204,7 @@ export default function App() {
                     classId={null}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    autoSaveBlocked={conflict}
                     styleReference={data.feedbackStyles?.[student.module] ?? ""}
                     onSaveStyle={(reference) => saveFeedbackStyle(student.module, reference)}
                     onConfigureAI={() => setModal({ kind: "ai" })}
@@ -1328,12 +1361,12 @@ export default function App() {
                                     action: async () => {
                                       if (
                                         await persist(
-                                          {
-                                            ...data,
-                                            records: data.records.filter(
+                                          (current) => ({
+                                            ...current,
+                                            records: current.records.filter(
                                               (r) => r.id !== record.id,
                                             ),
-                                          },
+                                          }),
                                           "教学记录已删除",
                                         )
                                       )
@@ -1475,6 +1508,7 @@ export default function App() {
                     className={group.name}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    autoSaveBlocked={conflict}
                     styleReference={data.feedbackStyles?.[group.module] ?? ""}
                     onSaveStyle={(reference) => saveFeedbackStyle(group.module, reference)}
                     onConfigureAI={() => setModal({ kind: "ai" })}
@@ -1902,6 +1936,7 @@ export default function App() {
                         "全部数据已清空",
                       )
                     ) {
+                      clearRecoveredInputs();
                       setConfirmation(null);
                       feedbackDirty.current = false;
                       setWorkspaceEpoch((value) => value + 1);

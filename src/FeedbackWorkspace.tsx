@@ -17,7 +17,7 @@ import {
 import { ApiError, generateFeedback } from "./api";
 import { Modal } from "./components";
 import FeedbackStyleReference from "./FeedbackStyleReference";
-import FeedbackSuggestions from "./FeedbackSuggestions";
+import { feedbackDraftScope, readFeedbackDrafts, writeFeedbackDraft, removeFeedbackDraft, type FeedbackDraftRecord } from "./feedbackDrafts";
 import { newId } from "./data";
 import {
   copyFeedbackText,
@@ -59,7 +59,8 @@ interface FeedbackWorkspaceProps {
   studentId: string | null;
   className?: string;
   sessions: FeedbackSession[];
-  onSave: (session: FeedbackSession) => Promise<boolean>;
+  onSave: (session: FeedbackSession, automatic?: boolean) => Promise<boolean>;
+  autoSaveBlocked?: boolean;
   styleReference?: string;
   onSaveStyle?: (reference: string) => Promise<boolean>;
   onDirtyChange?: (dirty: boolean) => void;
@@ -194,18 +195,44 @@ export default function FeedbackWorkspace({
   onDirtyChange,
   onConfigureAI,
   readonly = false,
+  autoSaveBlocked = false,
 }: FeedbackWorkspaceProps) {
   const orderedSessions = useMemo(
     () => sortFeedbackByRecentEdit(sessions),
     [sessions],
   );
-  const [draft, setDraft] = useState(() =>
-    makeDraft(module, students, classId, studentId, orderedSessions[0]),
-  );
-  const [baseline, setBaseline] = useState(() => feedbackSnapshot(draft));
-  const [selectedId, setSelectedId] = useState(students[0]?.id ?? "");
+  const scope = feedbackDraftScope(module, classId, studentId);
+  const [initial] = useState(() => {
+    const cached = readFeedbackDrafts(scope);
+    const record = readonly ? undefined : cached.drafts.find((item) =>
+      feedbackSnapshot(item.session) !== item.baselineSnapshot || sessions.some((session) => session.id === item.session.id));
+    const remote = record ? sessions.find((session) => session.id === record.session.id) : orderedSessions[0];
+    const remoteDraft = remote ? makeDraft(module, students, classId, studentId, remote) : undefined;
+    const remoteSnapshot = remoteDraft ? feedbackSnapshot(remoteDraft) : "";
+    const pending = record && feedbackSnapshot(record.session) !== record.baselineSnapshot;
+    const alreadySaved = record && remoteSnapshot === feedbackSnapshot(record.session);
+    const restored = record && (pending || remoteSnapshot === record.baselineSnapshot);
+    const session = restored ? makeDraft(module, students, classId, studentId, record.session)
+      : remoteDraft ?? makeDraft(module, students, classId, studentId, orderedSessions[0]);
+    return {
+      session, baseline: restored ? alreadySaved ? remoteSnapshot : record.baselineSnapshot : remote ? feedbackSnapshot(session) : "",
+      selectedId: restored && students.some((student) => student.id === record.selectedId) ? record.selectedId : students[0]?.id ?? "",
+      subjectText: restored ? record.subjectText : session.brief!.subjects.join("、"),
+      restored: Boolean(restored && pending && !alreadySaved), conflict: Boolean(restored && pending && !alreadySaved && remoteSnapshot !== record.baselineSnapshot),
+      drafts: cached.drafts.map((item) => {
+        const saved = sessions.find((entry) => entry.id === item.session.id);
+        const snapshot = saved ? feedbackSnapshot(makeDraft(module, students, classId, studentId, saved)) : "";
+        return snapshot === feedbackSnapshot(item.session) ? { ...item, baselineSnapshot: snapshot } : item;
+      }), error: cached.error,
+      remoteSignature: remote ? JSON.stringify(remote) : "",
+    };
+  });
+  const [draft, setDraft] = useState(initial.session);
+  const [baseline, setBaseline] = useState(initial.baseline);
+  const baselineRef = useRef(baseline);
+  const [selectedId, setSelectedId] = useState(initial.selectedId);
   const [subjectText, setSubjectText] = useState(
-    draft.brief!.subjects.join("、"),
+    initial.subjectText,
   );
   const [status, setStatus] = useState<Notice>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
@@ -221,7 +248,15 @@ export default function FeedbackWorkspace({
   const [needsConfiguration, setNeedsConfiguration] = useState(false);
   const [historyLimit, setHistoryLimit] = useState(20);
   const [styleDirty, setStyleDirty] = useState(false);
-  const [suggestionsBusy, setSuggestionsBusy] = useState(false);
+  const [localDrafts, setLocalDrafts] = useState(initial.drafts);
+  const [localError, setLocalError] = useState(initial.error);
+  const [recoveryConflict, setRecoveryConflict] = useState(initial.conflict);
+  const [autoSaveError, setAutoSaveError] = useState(false);
+  const saveLock = useRef(false);
+  const subjectTextRef = useRef(subjectText);
+  const selectedIdRef = useRef(selectedId);
+  const onSaveRef = useRef(onSave);
+  onSaveRef.current = onSave;
   const styleRef = useRef(styleReference);
   const draftRef = useRef(draft);
   const studentsRef = useRef(students);
@@ -232,7 +267,7 @@ export default function FeedbackWorkspace({
   const generationId = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const loadedSignature = useRef(
-    orderedSessions[0] ? JSON.stringify(orderedSessions[0]) : "",
+    initial.remoteSignature,
   );
   const dirtyCallback = useRef(onDirtyChange);
   dirtyCallback.current = onDirtyChange;
@@ -245,7 +280,8 @@ export default function FeedbackWorkspace({
     ),
   );
   const fieldId = useId();
-  const dirty = !readonly && feedbackSnapshot(draft) !== baseline;
+  const dirty = !readonly && feedbackSnapshot(draft) !== baseline &&
+    (baseline !== "" || hasFeedbackContent(draft) || localDrafts.some((item) => item.session.id === draft.id));
   const selected =
     students.find((student) => student.id === selectedId) ?? students[0];
   const selectedEntry = selected ? entryFor(draft, selected.id) : null;
@@ -280,9 +316,28 @@ export default function FeedbackWorkspace({
   const activeBrief = draft.brief!;
   const isOneToOne = module === "one-to-one";
 
+  function cacheDraft(session: FeedbackSession, base = baselineRef.current) {
+    if (readonly) return false;
+    const record: FeedbackDraftRecord = {
+      session, baselineSnapshot: base, subjectText: subjectTextRef.current,
+      selectedId: selectedIdRef.current, savedAt: new Date().toISOString(),
+    };
+    const result = writeFeedbackDraft(scope, record);
+    setLocalError(result.error);
+    if (result.ok) setLocalDrafts((prior) => [record, ...prior.filter((item) => item.session.id !== session.id)]);
+    return result.ok;
+  }
+
+  function selectStudent(id: string) {
+    selectedIdRef.current = id;
+    setSelectedId(id);
+    cacheDraft(draftRef.current);
+  }
+
   function updateDraft(updater: (current: FeedbackSession) => FeedbackSession) {
     const next = updater(draftRef.current);
     draftRef.current = next;
+    cacheDraft(next);
     setDraft(next);
   }
   function revision(id: string): Revision {
@@ -362,40 +417,52 @@ export default function FeedbackWorkspace({
     epoch.current++;
     contextVersion.current = 0;
     entryVersions.current.clear();
+    const local = session && readFeedbackDrafts(scope).drafts.find((item) => item.session.id === session.id);
+    const remote = session && sessions.find((item) => item.id === session.id);
+    const remoteBaseline = remote ? feedbackSnapshot(makeDraft(module, studentsRef.current, classId, studentId, remote)) : "";
+    const alreadySaved = local && feedbackSnapshot(local.session) === remoteBaseline;
+    const recover = local && (feedbackSnapshot(local.session) !== local.baselineSnapshot || alreadySaved);
     const next = makeDraft(
       module,
       studentsRef.current,
       classId,
       studentId,
-      session,
+      recover ? local.session : session,
     );
     draftRef.current = next;
     setDraft(next);
-    setBaseline(feedbackSnapshot(next));
-    setSubjectText(next.brief!.subjects.join("、"));
-    loadedSignature.current = session ? JSON.stringify(session) : "";
+    baselineRef.current = recover ? alreadySaved ? remoteBaseline : local.baselineSnapshot : session ? feedbackSnapshot(next) : "";
+    setBaseline(baselineRef.current);
+    subjectTextRef.current = recover ? local.subjectText : next.brief!.subjects.join("、");
+    setSubjectText(subjectTextRef.current);
+    selectedIdRef.current = recover && studentsRef.current.some((student) => student.id === local.selectedId)
+      ? local.selectedId : studentsRef.current.some((student) => student.id === selectedIdRef.current) ? selectedIdRef.current : studentsRef.current[0]?.id ?? "";
+    setSelectedId(selectedIdRef.current);
+    setRecoveryConflict(Boolean(recover && !alreadySaved && local.baselineSnapshot !== remoteBaseline));
+    setAutoSaveError(false);
+    loadedSignature.current = remote ? JSON.stringify(remote) : "";
+    if (!session || recover) cacheDraft(next);
     setStatus(null);
     setProgress(null);
     setFailures(new Map());
     setProposal(null);
     setConfirmation(null);
-    setSaving(false);
   }
   function requestSession(session?: FeedbackSession) {
     if (session?.id === draft.id) return;
-    if (dirty || progress || suggestionsBusy) {
+    if (progress || localError) {
       setConfirmation({
         title: "切换前处理当前反馈",
         message:
-          "当前有未保存的修改或正在生成的内容。可以返回保存；继续切换会放弃未保存修改并停止生成。",
-        label: "放弃修改并切换",
+          localError ? "本机草稿未能保存，请先复制留存当前文字。继续切换会离开当前编辑区。" : "生成尚未完成，切换会停止生成。已输入的内容保留在本机草稿中。",
+        label: "继续切换",
         action: () => loadSession(session),
       });
     } else loadSession(session);
   }
   useEffect(() => {
-    dirtyCallback.current?.(dirty || styleDirty || suggestionsBusy || Boolean(progress));
-  }, [dirty, styleDirty, suggestionsBusy, progress]);
+    dirtyCallback.current?.((dirty && Boolean(localError)) || styleDirty || Boolean(progress));
+  }, [dirty, localError, styleDirty, progress]);
   useEffect(() => {
     if (styleRef.current === styleReference) return;
     styleRef.current = styleReference;
@@ -414,13 +481,13 @@ export default function FeedbackWorkspace({
     [],
   );
   useEffect(() => {
-    if (dirty || saving || progress) return;
+    if (dirty || saving || progress || recoveryConflict) return;
     const latest = sessions.find((session) => session.id === draft.id);
     if (latest && JSON.stringify(latest) !== loadedSignature.current)
       loadSession(latest);
     else if (!latest && loadedSignature.current)
       loadSession(orderedSessions[0]);
-  }, [sessions, orderedSessions, draft.id, dirty, saving, progress]);
+  }, [sessions, orderedSessions, draft.id, dirty, saving, progress, recoveryConflict]);
   useEffect(() => {
     const changed = students.filter(
       (student) =>
@@ -436,8 +503,10 @@ export default function FeedbackWorkspace({
     );
     for (const student of changed)
       changeEntry(student.id, (entry) => ({ ...entry, reviewed: false }));
-    if (!students.some((student) => student.id === selectedId))
-      setSelectedId(students[0]?.id ?? "");
+    if (!students.some((student) => student.id === selectedId)) {
+      selectedIdRef.current = students[0]?.id ?? "";
+      setSelectedId(selectedIdRef.current);
+    }
   }, [students, selectedId]);
 
   function validateContext(): boolean {
@@ -473,11 +542,12 @@ export default function FeedbackWorkspace({
       updatedAt: new Date().toISOString(),
     };
   }
-  async function save() {
-    if (readonly || saving || !validateContext()) return;
+  async function save(automatic = false) {
+    if (readonly || saveLock.current || recoveryConflict || autoSaveBlocked) return;
+    if (!automatic && !validateContext()) return;
     const saved = snapshotForSave();
     if (!hasFeedbackContent(saved)) {
-      setStatus({
+      if (!automatic) setStatus({
         text: "先填写一点课程内容、学生记录或反馈正文，再保存草稿。",
         error: true,
       });
@@ -485,44 +555,95 @@ export default function FeedbackWorkspace({
     }
     const atEpoch = epoch.current;
     const submitted = feedbackSnapshot(saved);
+    const submittedSubjectText = subjectTextRef.current;
+    const submittedSelection = selectedIdRef.current;
+    saveLock.current = true;
     setSaving(true);
     try {
-      const ok = await onSave(saved);
-      if (atEpoch !== epoch.current) return;
+      const ok = await onSaveRef.current(saved, automatic);
+      if (ok) {
+        // A slow save must not erase text typed after the request started,
+        // including when the teacher has already switched to another lesson.
+        const pending = readFeedbackDrafts(scope).drafts.find((item) => item.session.id === saved.id);
+        if (pending && feedbackSnapshot(pending.session) === submitted &&
+          pending.subjectText === submittedSubjectText && pending.selectedId === submittedSelection) {
+          const removed = removeFeedbackDraft(scope, saved.id);
+          if (!removed.ok) setLocalError(removed.error);
+          else setLocalDrafts((prior) => prior.filter((item) => item.session.id !== saved.id));
+        } else if (pending) {
+          const acknowledged = { ...pending, baselineSnapshot: submitted };
+          const result = writeFeedbackDraft(scope, acknowledged);
+          if (!result.ok) setLocalError(result.error);
+          else setLocalDrafts((prior) => prior.map((item) => item.session.id === saved.id ? acknowledged : item));
+        }
+      }
+      if (draftRef.current.id !== saved.id) return;
       if (ok) {
         loadedSignature.current = JSON.stringify(saved);
+        baselineRef.current = submitted;
         setBaseline(submitted);
-        updateDraft((current) => ({
+        setAutoSaveError(false);
+        const current = draftRef.current;
+        const next = {
           ...current,
           entries: studentsRef.current.map((student) =>
             entryFor(current, student.id),
           ),
           updatedAt: saved.updatedAt,
-        }));
-        setStatus({
+        };
+        draftRef.current = next;
+        setDraft(next);
+        if (feedbackSnapshot(next) !== submitted) cacheDraft(next, submitted);
+        if (!automatic && atEpoch === epoch.current) setStatus({
           text:
             feedbackSnapshot(draftRef.current) === submitted
               ? "草稿已保存。可以随时回来补充、生成和核对。"
               : "本次提交已保存；保存期间的新修改仍待保存。",
         });
-      } else
-        setStatus({
+      } else {
+        setAutoSaveError(true);
+        if (!automatic) setStatus({
           text: "保存未完成，请按页面提示处理后重试。所有输入仍保留。",
           error: true,
         });
+      }
     } catch (error) {
-      if (atEpoch === epoch.current)
-        setStatus({
+      if (atEpoch === epoch.current) {
+        setAutoSaveError(true);
+        if (!automatic) setStatus({
           text:
             error instanceof Error
               ? error.message
               : "保存失败，当前输入已保留。",
           error: true,
         });
+      }
     } finally {
-      if (atEpoch === epoch.current) setSaving(false);
+      saveLock.current = false;
+      setSaving(false);
     }
   }
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  const inputErrors = feedbackInputErrors({ module, brief: activeBrief }, { lessonAt: draft.lessonAt });
+  for (const entry of draft.entries) {
+    inputErrors.push(...feedbackInputErrors({ module, brief: activeBrief, observations: entry.observations }));
+    if (entry.content.length > 10000) inputErrors.push("反馈正文不能超过 10000 字，请精简正文。");
+  }
+  const canAutoSave = dirty && hasFeedbackContent(draft) && !inputErrors.length && !recoveryConflict && !autoSaveBlocked;
+  useEffect(() => {
+    if (readonly || saving || progress || !canAutoSave) return;
+    const timer = setTimeout(() => void saveRef.current(true), autoSaveError ? 15000 : 1000);
+    return () => clearTimeout(timer);
+  }, [draft, readonly, saving, progress, canAutoSave, autoSaveError]);
+
+  const saveStatus = localError ? localError
+    : recoveryConflict || autoSaveBlocked ? "本机草稿已保留，数据库有更新，请先处理版本冲突。"
+    : saving ? "正在自动保存到数据库…"
+    : dirty ? autoSaveError ? "已保留本机草稿，数据库暂未保存，稍后自动重试。"
+      : inputErrors.length ? `已保留本机草稿。${[...new Set(inputErrors)].join(" ")}`
+        : hasFeedbackContent(draft) ? "已保留本机草稿，正在等待自动保存。" : "已保留本机草稿，可继续填写。"
+      : sessions.some((session) => session.id === draft.id) ? "已保存到数据库。" : "填写后自动保存，也可以点击立即保存。";
   function acceptGenerated(
     student: Student,
     content: string,
@@ -577,7 +698,7 @@ export default function FeedbackWorkspace({
     }
   }
   async function runGeneration(targets: Student[], single = false) {
-    if (readonly || controller.current || suggestionsBusy || !validateContext()) return;
+    if (readonly || controller.current || !validateContext()) return;
     if (styleDirty) {
       setStatus({ text: "请先保存或撤销风格参考的修改，再生成反馈。", error: true });
       return;
@@ -807,13 +928,45 @@ export default function FeedbackWorkspace({
           )}
         </div>
       </div>
+      <div className={`fb-status ${localError || recoveryConflict || autoSaveBlocked ? "fb-status-error" : ""}`} role="status" aria-live="polite">
+        <Save size={16} /><span>{saveStatus}</span>
+      </div>
+      {initial.restored && <p className="fb-field-note">已恢复上次留在本机的反馈草稿，可以继续编辑。</p>}
+      {recoveryConflict && <div className="fb-recovery-actions">
+        <p>数据库中的这份反馈已变更。当前保留的是本机文字，不会自动覆盖数据库。</p>
+        <button type="button" className="button button-secondary" onClick={() => {
+          const previousId = draftRef.current.id;
+          const now = new Date().toISOString();
+          const next = { ...draftRef.current, id: newId(), createdAt: now, updatedAt: now };
+          if (!cacheDraft(next, "")) return;
+          const removed = removeFeedbackDraft(scope, previousId);
+          if (removed.ok) setLocalDrafts((prior) => prior.filter((item) => item.session.id !== previousId));
+          else setLocalError(removed.error);
+          baselineRef.current = "";
+          setBaseline("");
+          loadedSignature.current = "";
+          draftRef.current = next;
+          setDraft(next);
+          setRecoveryConflict(false);
+        }}>保留这份文字，另存为新反馈</button>
+        <button type="button" className="button button-ghost" onClick={() => setConfirmation({
+          title: "采用数据库版本？", message: "这会放弃当前这份本机草稿，显示数据库已保存的内容。", label: "放弃本机草稿并读取",
+          action: () => {
+            const id = draftRef.current.id;
+            const result = removeFeedbackDraft(scope, id);
+            if (!result.ok) { setLocalError(result.error); return; }
+            setLocalDrafts((prior) => prior.filter((item) => item.session.id !== id));
+            loadSession(sessions.find((item) => item.id === id));
+          },
+        })}>采用数据库版本</button>
+      </div>}
       {onSaveStyle && (
         <FeedbackStyleReference
           module={module}
           value={styleReference}
           onSave={onSaveStyle}
           onDirtyChange={setStyleDirty}
-          disabled={readonly || Boolean(progress) || suggestionsBusy}
+          disabled={readonly || Boolean(progress)}
         />
       )}
       <section className="fb-common">
@@ -824,7 +977,7 @@ export default function FeedbackWorkspace({
           </h3>
           <span className={`fb-draft-badge ${dirty ? "fb-unsaved" : ""}`}>
             {dirty
-              ? "有未保存修改"
+              ? "本机草稿"
               : sessions.some((session) => session.id === draft.id)
                 ? "已保存草稿"
                 : "新草稿"}
@@ -895,6 +1048,7 @@ export default function FeedbackWorkspace({
               readOnly={readonly}
               placeholder="例如：数学、物理"
               onChange={(event) => {
+                subjectTextRef.current = event.target.value;
                 setSubjectText(event.target.value);
                 changeBrief({
                   subjects: [
@@ -907,7 +1061,11 @@ export default function FeedbackWorkspace({
                   ],
                 });
               }}
-              onBlur={() => setSubjectText(activeBrief.subjects.join("、"))}
+              onBlur={() => {
+                subjectTextRef.current = activeBrief.subjects.join("、");
+                setSubjectText(subjectTextRef.current);
+                cacheDraft(draftRef.current);
+              }}
             />
           </label>
           <label className="field fb-length">
@@ -1018,7 +1176,7 @@ export default function FeedbackWorkspace({
           <button
             type="button"
             className="button button-secondary"
-            disabled={Boolean(progress) || suggestionsBusy || styleDirty || !eligible.length}
+            disabled={Boolean(progress) || styleDirty || !eligible.length}
             onClick={() => void runGeneration(eligible)}
           >
             <Sparkles size={16} />
@@ -1078,7 +1236,7 @@ export default function FeedbackWorkspace({
                     aria-current={
                       student.id === selected?.id ? "true" : undefined
                     }
-                    onClick={() => setSelectedId(student.id)}
+                    onClick={() => selectStudent(student.id)}
                   >
                     <span>
                       <strong>{student.name}</strong>
@@ -1105,52 +1263,42 @@ export default function FeedbackWorkspace({
                     <p>只写你实际了解的情况，不必组织成完整段落。</p>
                   </div>
                 </div>
-                {!readonly && (
-                  <FeedbackSuggestions
-                    key={`${draft.id}-${selected.id}`}
-                    lessonAt={draft.lessonAt}
-                    input={{
-                      module,
-                      brief: activeBrief,
-                      observations,
-                      grade: selected.grade,
-                      styleReference,
-                    }}
-                    disabled={Boolean(progress) || styleDirty}
-                    onBusyChange={setSuggestionsBusy}
-                    onApply={(field, text) => {
-                      const previous = observations[field].trim();
-                      if (previous.includes(text)) {
-                        setStatus({ text: "这条内容已经在记录中。" });
-                        return;
-                      }
-                      const next = `${previous}${previous ? "；" : ""}${text}`;
-                      if (next.length > 2000) {
-                        setStatus({ text: "加入后会超过该栏的 2000 字上限，请先精简记录。", error: true });
-                        return;
-                      }
-                      changeObservation(field, next);
-                      setStatus({ text: "已加入对应记录，请核对内容是否符合实际情况。" });
-                    }}
+                <label className="field fb-observation">
+                  {isOneToOne ? "课堂状态与掌握情况" : "学生情况"}
+                  <small>只需在这里记几条事实，亮点、困难和建议可以写在一起，不必再逐项填写。</small>
+                  <textarea
+                    rows={4}
+                    value={observations.performance}
+                    maxLength={2000}
+                    readOnly={readonly}
+                    placeholder="如：能独立列出方程，移项时偶尔漏变号；遇到难题愿意尝试。短句即可。"
+                    onChange={(event) =>
+                      changeObservation("performance", event.target.value)
+                    }
                   />
-                )}
-                {OBSERVATION_FIELDS.map((item) => (
-                  <label className="field fb-observation" key={item.key}>
-                    {isOneToOne && item.key === "performance" ? "课堂状态与掌握情况" : item.label}
-                    <textarea
-                      rows={item.key === "performance" ? 2 : 1}
-                      value={observations[item.key]}
-                      maxLength={2000}
-                      readOnly={readonly}
-                      placeholder={isOneToOne && item.key === "performance"
-                        ? "如：能独立列出方程，移项时偶尔漏变号；遇到难题愿意尝试。"
-                        : item.placeholder}
-                      onChange={(event) =>
-                        changeObservation(item.key, event.target.value)
-                      }
-                    />
-                  </label>
-                ))}
+                </label>
+                <details
+                  className="fb-optional"
+                  key={`${draft.id}-${selected.id}-details`}
+                  open={Boolean(observations.strengths || observations.difficulties || observations.plan)}
+                >
+                  <summary>补充细节（选填）</summary>
+                  {OBSERVATION_FIELDS.filter((item) => item.key !== "performance").map((item) => (
+                    <label className="field fb-observation" key={item.key}>
+                      {item.label}
+                      <textarea
+                        rows={1}
+                        value={observations[item.key]}
+                        maxLength={2000}
+                        readOnly={readonly}
+                        placeholder={item.placeholder}
+                        onChange={(event) =>
+                          changeObservation(item.key, event.target.value)
+                        }
+                      />
+                    </label>
+                  ))}
+                </details>
                 {module === "evening" && subjectFields.length > 0 && (
                   <div className="fb-subject-notes">
                     <h4>
@@ -1247,7 +1395,7 @@ export default function FeedbackWorkspace({
                       type="button"
                       className="button button-primary"
                       disabled={
-                        Boolean(progress) || suggestionsBusy || styleDirty || !hasPersonalFacts(observations)
+                        Boolean(progress) || styleDirty || !hasPersonalFacts(observations)
                       }
                       onClick={() => requestGenerate(selected)}
                     >
@@ -1367,7 +1515,7 @@ export default function FeedbackWorkspace({
           {isOneToOne
             ? (reviewedCount ? "本次反馈已核对" : "本次反馈待核对")
             : `已核对 ${reviewedCount} / ${students.length} 人`}
-          <span>{dirty ? "修改尚未保存" : "草稿可随时继续补充"}</span>
+          <span>{saving ? "保存中" : dirty ? "本机草稿待同步" : "草稿可随时继续补充"}</span>
         </p>
         <div>
           {module !== "one-to-one" && (
@@ -1387,6 +1535,7 @@ export default function FeedbackWorkspace({
               className="button button-primary"
               disabled={
                 saving ||
+                recoveryConflict || autoSaveBlocked ||
                 !hasFeedbackContent(draft) ||
                 (!dirty && sessions.some((session) => session.id === draft.id))
               }
@@ -1397,11 +1546,21 @@ export default function FeedbackWorkspace({
               ) : (
                 <Save size={16} />
               )}
-              {saving ? "正在保存…" : "保存反馈草稿"}
+              {saving ? "正在保存…" : "立即保存"}
             </button>
           )}
         </div>
       </div>
+      {localDrafts.some((item) => feedbackSnapshot(item.session) !== item.baselineSnapshot) && <details className="fb-history" open>
+        <summary><span><Save size={17} />本机未同步草稿</span></summary>
+        <div className="fb-history-list">
+          {localDrafts.filter((item) => feedbackSnapshot(item.session) !== item.baselineSnapshot).map((item) => <button
+            type="button" key={item.session.id} className={`fb-history-item ${item.session.id === draft.id ? "fb-history-active" : ""}`}
+            onClick={() => requestSession(item.session)}>
+            <strong>{formatFeedbackPeriod(item.session) || "日期待填写"}</strong><span>本机已保留 · 点击继续填写</span>
+          </button>)}
+        </div>
+      </details>}
       <details className="fb-history">
         <summary>
           <span>

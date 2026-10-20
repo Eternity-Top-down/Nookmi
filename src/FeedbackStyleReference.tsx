@@ -1,6 +1,7 @@
-import { useEffect, useId, useReducer, useRef } from "react";
+import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { Check, ChevronDown, LoaderCircle, Save, Trash2 } from "lucide-react";
 import type { ModuleId } from "./types";
+import { clearStyleDraft, readStyleDraft, writeStyleDraft, type StyleDraft } from "./styleDrafts";
 import "./FeedbackStyleReference.css";
 
 export interface FeedbackStyleReferenceProps {
@@ -33,7 +34,15 @@ export type StyleReferenceAction =
   | { type: "discard" }
   | { type: "load-external" };
 
-export function createStyleReferenceState(value: string): StyleReferenceState {
+export function createStyleReferenceState(value: string, recovered?: StyleDraft | null): StyleReferenceState {
+  if (recovered && recovered.draft !== recovered.baseSavedValue) {
+    return {
+      draft: recovered.draft, savedValue: recovered.baseSavedValue,
+      externalValue: value === recovered.baseSavedValue ? null : value,
+      saving: false, submitted: null,
+      notice: { message: "已恢复此浏览器未保存的风格输入；点击保存后才会用于 AI 生成。" },
+    };
+  }
   return { draft: value, savedValue: value, externalValue: null, saving: false, submitted: null, notice: null };
 }
 
@@ -68,7 +77,12 @@ export function styleReferenceReducer(state: StyleReferenceState, action: StyleR
 }
 
 function StyleReferenceEditor({ module, value, onSave, onDirtyChange, disabled = false }: FeedbackStyleReferenceProps) {
-  const [state, dispatch] = useReducer(styleReferenceReducer, value, createStyleReferenceState);
+  const [initialCache] = useState(() => readStyleDraft(module));
+  const [state, dispatch] = useReducer(styleReferenceReducer, value,
+    (savedValue) => createStyleReferenceState(savedValue, initialCache.draft));
+  const [cacheError, setCacheError] = useState(initialCache.error);
+  const [expanded, setExpanded] = useState(Boolean(initialCache.draft || initialCache.error));
+  const cachedInputRef = useRef<Pick<StyleDraft, "draft" | "baseSavedValue"> | null>(initialCache.draft);
   const fieldId = useId();
   const savingRef = useRef(false);
   const aliveRef = useRef(true);
@@ -85,6 +99,22 @@ function StyleReferenceEditor({ module, value, onSave, onDirtyChange, disabled =
     return () => { aliveRef.current = false; dirtyCallback.current?.(false); };
   }, []);
 
+  function edit(next: string) {
+    if (locked) return;
+    dispatch({ type: "edit", value: next });
+    const error = writeStyleDraft(module, next, state.savedValue);
+    if (!error) cachedInputRef.current = { draft: next, baseSavedValue: state.savedValue };
+    setCacheError(error);
+  }
+
+  function discard(loadExternal = false) {
+    if (locked) return;
+    const error = clearStyleDraft(module, cachedInputRef.current ?? { draft: state.draft, baseSavedValue: state.savedValue });
+    if (!error) cachedInputRef.current = null;
+    dispatch({ type: loadExternal ? "load-external" : "discard" });
+    setCacheError(error);
+  }
+
   async function save() {
     if (disabled || savingRef.current || !dirty) return;
     if (state.draft.length > 12000) {
@@ -92,11 +122,15 @@ function StyleReferenceEditor({ module, value, onSave, onDirtyChange, disabled =
       return;
     }
     const submitted = state.draft.trim();
+    const cachedInput = cachedInputRef.current ?? { draft: state.draft, baseSavedValue: state.savedValue };
     savingRef.current = true;
     dispatch({ type: "save-start", value: submitted });
     try {
       const ok = await onSave(submitted);
+      const cacheResult = ok ? clearStyleDraft(module, cachedInput) : undefined;
+      if (cacheResult === null) cachedInputRef.current = null;
       if (!aliveRef.current) return;
+      if (cacheResult !== undefined) setCacheError(cacheResult);
       dispatch(ok
         ? { type: "save-success", value: submitted }
         : { type: "save-failure", message: "风格参考未保存成功，当前输入已保留。请处理页面提示后重试。" });
@@ -110,7 +144,7 @@ function StyleReferenceEditor({ module, value, onSave, onDirtyChange, disabled =
     }
   }
 
-  return <details className="style-reference">
+  return <details className="style-reference" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
     <summary>
       <span className="style-reference-title">个人风格参考</span>
       <span className={`style-reference-badge ${state.savedValue.trim() ? "is-set" : ""}`}>
@@ -126,7 +160,7 @@ function StyleReferenceEditor({ module, value, onSave, onDirtyChange, disabled =
         <textarea id={fieldId} rows={7} maxLength={12000} value={state.draft} readOnly={locked}
           aria-describedby={`${fieldId}-hint ${fieldId}-count`}
           placeholder="粘贴 1–3 份你满意的反馈范文，可以用空行分隔。"
-          onChange={(event) => { if (!locked) dispatch({ type: "edit", value: event.target.value }); }} />
+          onChange={(event) => edit(event.target.value)} />
       </label>
       <div className="style-reference-guidance">
         <p id={`${fieldId}-hint`}>建议粘贴 1–3 份范文，用空行分隔；请先去掉姓名、联系方式等身份信息。AI 只学习表达方式，不照搬旧范文中的事实。</p>
@@ -135,18 +169,19 @@ function StyleReferenceEditor({ module, value, onSave, onDirtyChange, disabled =
       {state.externalValue !== null && <div className="style-reference-conflict" role="status">
         <p>已保存的参考在其他位置发生变化，当前输入仍保留。需要替换时，可明确加载最新参考。</p>
         <button type="button" className="button button-secondary button-sm" disabled={locked}
-          onClick={() => dispatch({ type: "load-external" })}>放弃当前输入，加载最新参考</button>
+          onClick={() => discard(true)}>放弃当前输入，加载最新参考</button>
       </div>}
+      {cacheError && <p className="style-reference-notice is-error" role="alert">{cacheError}</p>}
       {state.notice && <p className={`style-reference-notice ${state.notice.error ? "is-error" : ""}`} role={state.notice.error ? "alert" : "status"}>
         {!state.notice.error && <Check size={15} aria-hidden="true" />}{state.notice.message}
       </p>}
       <div className="style-reference-actions">
-        <span>输入不会自动保存；清空后保存即可移除参考。</span>
+        <span>输入暂存在此浏览器，刷新后可恢复；点击保存才更新 AI 使用的参考。清空后保存即可移除。</span>
         <div>
           {dirty && <button type="button" className="button button-secondary button-sm" disabled={locked}
-            onClick={() => dispatch({ type: "discard" })}>撤销修改</button>}
+            onClick={() => discard()}>撤销修改</button>}
           <button type="button" className="button button-ghost button-sm" disabled={locked || !state.draft}
-            onClick={() => dispatch({ type: "edit", value: "" })}><Trash2 size={15} />清空输入</button>
+            onClick={() => edit("")}><Trash2 size={15} />清空输入</button>
           <button type="button" className="button button-primary button-sm" disabled={locked || !dirty}
             onClick={() => void save()}>{state.saving ? <LoaderCircle size={15} className="style-reference-spinner" /> : <Save size={15} />}保存风格参考</button>
         </div>

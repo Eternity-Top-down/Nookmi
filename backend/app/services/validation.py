@@ -111,7 +111,6 @@ def validation_message(error: dict) -> str:
 
 def validation_detail(path: str, errors: list[dict]) -> str:
     prefix = {
-        "/api/ai/suggestions": "暂时无法推荐记录",
         "/api/ai/generate": "暂时无法生成反馈",
         "/api/ai/settings": "AI 设置未保存",
         "/api/workspace": "数据未保存",

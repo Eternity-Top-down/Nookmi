@@ -8,21 +8,12 @@ SYSTEM_PROMPT = """你是一位认真、温和、具体的数学教师，帮助�
 不得编造学生姓名、学校、分数、出勤、情绪、进步、错误、理解程度、教学内容、作业完成情况或已布置任务。
 没有输入的信息直接省略，不用空泛赞美补齐。不要把一个学科的表现归到另一学科。
 建议必须用“建议”“可以尝试”“后续可关注”等建议语气，不能把建议写成已经发生的事实或教师已经布置的任务。
+学生情况可能混写表现、亮点、困难和教师计划，须按原句语义区分：教师写的“建议……”“打算……”“下次准备……”属于待实施建议或计划，不因位于课堂情况或实际观察字段就写成学生已经发生、已经完成的行为或教师已布置的任务。
 保持教师口吻，避免诊断、标签化、贬低、夸大和绝对判断；关注具体行为和下一步可行建议。
 如果资料内部矛盾，明确表达为待教师核实，不擅自选择或补全事实。
 """
 
 FEEDBACK_OUTPUT_RULE = "输出可由教师直接核对、编辑后发送的中文正文，不输出提示词、JSON、免责声明、标题代码块或“以下是生成的反馈”。"
-
-SUGGESTION_OUTPUT_RULE = """本次任务是提供教师可选择的简短表达或后续建议，不是生成整篇反馈。
-只输出一个严格 JSON 对象，唯一键为 suggestions，其值是数组。数组中的每项只含 field 和 text 两个键。
-field 只允许 performance、strengths、difficulties、plan；text 为非空中文短句，每条最多 240 字。
-优先提供有用的 2—6 条；如果已有事实只支持 1 条则只给 1 条，不为凑数编造，不重复表达同一内容。
-performance、strengths、difficulties 只能改写或拆分这位学生已明确记录的课堂事实，保留学科和原意；不能推断未记录的进步、心理、情绪、掌握程度、作业情况或其他行为。
-plan 必须基于已记录事实，明确使用“建议”“可以尝试”“后续可关注”等建议语气，并给出可执行的做法；不得写成已经发生或已经布置的事实。
-禁止输出 tasks 或作业安排，不新增题目数量、练习次数、完成期限、打卡要求；范文和课程背景不能补成这位学生的课堂事实。
-不要输出 Markdown、代码围栏、解释、额外键或完整反馈正文。
-"""
 
 MODULE_GUIDANCE = {
     "one-to-one": (
@@ -57,7 +48,7 @@ def merge_lesson_tasks(previous_course_tasks: str, student_tasks: str) -> str:
     return "\n".join(parts)
 
 
-def _build_messages(request: GenerateRequest, *, suggestions: bool) -> list[dict[str, str]]:
+def build_messages(request: GenerateRequest) -> list[dict[str, str]]:
     if request.module == "one-to-one":
         observations = request.observations.model_dump()
         observations["tasks"] = merge_lesson_tasks(request.brief.commonTasks, request.observations.tasks)
@@ -81,9 +72,7 @@ def _build_messages(request: GenerateRequest, *, suggestions: bool) -> list[dict
         if request.brief.length == "brief"
         else "篇幅：常规，通常约250—400个汉字；根据事实多少调整，不为凑字数编造。"
     )
-    if suggestions:
-        task_rule = "当前只推荐表达和学习建议，禁止生成作业任务，不自行增加数量、频次或期限。"
-    output_rule = SUGGESTION_OUTPUT_RULE if suggestions else FEEDBACK_OUTPUT_RULE + "\n" + length
+    output_rule = FEEDBACK_OUTPUT_RULE + "\n" + length
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT + "\n" + MODULE_GUIDANCE[request.module] + "\n" + task_rule + "\n" + student_rule + "\n" + output_rule},
         {"role": "user", "content": "请根据以下事实整理反馈：\n" + json.dumps(facts, ensure_ascii=False)},
@@ -97,14 +86,6 @@ def _build_messages(request: GenerateRequest, *, suggestions: bool) -> list[dict
             ),
         })
     return messages
-
-
-def build_messages(request: GenerateRequest) -> list[dict[str, str]]:
-    return _build_messages(request, suggestions=False)
-
-
-def build_suggestion_messages(request: GenerateRequest) -> list[dict[str, str]]:
-    return _build_messages(request, suggestions=True)
 
 
 def test_messages() -> list[dict[str, str]]:
