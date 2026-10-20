@@ -113,6 +113,9 @@
   grid-template-columns: 1fr 1fr;
   gap: 18px;
 }
+.fb-lesson-fields {
+  grid-template-columns: 1fr;
+}
 .fb-common textarea {
   min-height: 70px;
   resize: vertical;

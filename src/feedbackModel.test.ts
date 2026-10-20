@@ -10,6 +10,8 @@ import {
   hasFeedbackContent,
   hasObservations,
   hasPersonalFacts,
+  mergeLessonTasks,
+  normalizeOneToOneTasks,
   outlineFeedback,
   sortFeedbackByRecentEdit,
 } from "./feedbackModel";
@@ -34,6 +36,113 @@ function fixture(): FeedbackSession {
     updatedAt: "2026-10-21T10:00:00.000Z",
   };
 }
+
+describe("one-on-one lesson task compatibility", () => {
+  function lesson(commonTasks = "", tasks = ""): FeedbackSession {
+    const session = fixture();
+    session.module = "one-to-one";
+    session.classId = null;
+    session.studentId = "student-1";
+    session.brief!.commonTasks = commonTasks;
+    session.entries[0].observations!.tasks = tasks;
+    return session;
+  }
+
+  it.each([
+    [" 完成练习册 ", " 订正错题 ", "完成练习册\n订正错题"],
+    [" 完成练习册 ", "", "完成练习册"],
+    ["", " 订正错题 ", "订正错题"],
+    [" 订正错题 ", "订正错题", "订正错题"],
+    [" \n ", "\t", ""],
+    ["第一题\n第二题", "第二题\n第三题", "第一题\n第二题\n第二题\n第三题"],
+  ])("combines task fields without removing distinct notes", (common, individual, expected) => {
+    expect(mergeLessonTasks(common, individual)).toBe(expected);
+    const normalized = normalizeOneToOneTasks(lesson(common, individual));
+    expect(normalized.brief!.commonTasks).toBe("");
+    expect(normalized.entries[0].observations!.tasks).toBe(expected);
+  });
+
+  it("preserves historical content, review metadata, and all other fields without mutating the source", () => {
+    const original = lesson("完成练习册", "订正错题");
+    original.entries[0].content = "此前已经发出的历史正文，保持原样。";
+    original.entries[0].reviewed = true;
+    original.entries[0].generationSource = "ai";
+    original.entries[0].generatedFrom = "old-source-signature";
+    original.entries[0].observations!.performance = "能独立解题";
+    original.entries[0].observations!.subjects = { 数学: "计算准确" };
+    const snapshot = structuredClone(original);
+    const normalized = normalizeOneToOneTasks(original);
+    expect(original).toEqual(snapshot);
+    expect(normalized).toEqual({
+      ...snapshot,
+      brief: { ...snapshot.brief!, commonTasks: "" },
+      entries: [{
+        ...snapshot.entries[0],
+        observations: { ...snapshot.entries[0].observations!, tasks: "完成练习册\n订正错题" },
+      }],
+    });
+    expect(normalized).not.toBe(original);
+    expect(normalized.entries[0].observations!.subjects).not.toBe(original.entries[0].observations!.subjects);
+  });
+
+  it("moves a legacy common task when no observations object exists", () => {
+    const original = lesson("完成本次练习");
+    delete original.entries[0].observations;
+    const normalized = normalizeOneToOneTasks(original);
+    expect(normalized.entries[0].observations).toEqual({ ...emptyObservations(), tasks: "完成本次练习" });
+    expect(original.entries[0].observations).toBeUndefined();
+  });
+
+  it("retains the entire maximum-size legacy pair below the new 8000-character task limit", () => {
+    const common = "共".repeat(5000);
+    const individual = "个".repeat(2000);
+    const normalized = normalizeOneToOneTasks(lesson(common, individual));
+    const tasks = normalized.entries[0].observations!.tasks;
+    expect(tasks).toBe(`${common}\n${individual}`);
+    expect(tasks).toHaveLength(7001);
+    expect(tasks.length).toBeLessThanOrEqual(8000);
+    expect(hasFeedbackContent(normalized)).toBe(true);
+  });
+
+  it("leaves class modules and sessions without a unique one-on-one target unchanged", () => {
+    for (const module of ["evening", "course"] as const) {
+      const session = { ...lesson("共同安排", "个人安排"), module };
+      expect(normalizeOneToOneTasks(session)).toBe(session);
+    }
+    const noBrief = lesson();
+    delete noBrief.brief;
+    expect(normalizeOneToOneTasks(noBrief)).toBe(noBrief);
+    const emptyRoster = { ...lesson(), entries: [] };
+    expect(normalizeOneToOneTasks(emptyRoster)).toBe(emptyRoster);
+    const multiple = lesson("共同安排", "个人安排");
+    multiple.entries.push({ studentId: "student-2", content: "另一位学生的正文" });
+    expect(normalizeOneToOneTasks(multiple)).toBe(multiple);
+    const normalized = lesson("", "已合并的任务");
+    expect(normalizeOneToOneTasks(normalized)).toBe(normalized);
+  });
+
+  it.each([
+    ["共同字段中的旧任务", "个人字段中的旧任务", "共同字段中的旧任务\n个人字段中的旧任务"],
+    ["仅共同字段", "", "仅共同字段"],
+    ["", "仅个人字段", "仅个人字段"],
+    ["相同任务", "相同任务", "相同任务"],
+  ])("emits a single lesson task section for either legacy field", (common, individual, expected) => {
+    const session = lesson(common, individual);
+    const text = outlineFeedback("one-to-one", session.brief!, session.entries[0].observations!);
+    expect(text).toBe(`课后任务\n${expected}`);
+    expect(text).not.toContain("共同任务");
+    expect(text).not.toContain("个人任务");
+  });
+
+  it("omits an empty task section and preserves separate task sections for class modes", () => {
+    const empty = lesson(" \n", " ");
+    expect(outlineFeedback("one-to-one", empty.brief!, empty.entries[0].observations!)).toBe("");
+    const session = lesson("共同安排", "个人安排");
+    for (const module of ["evening", "course"] as const) {
+      expect(outlineFeedback(module, session.brief!, session.entries[0].observations!)).toBe("共同任务\n共同安排\n\n个人任务\n个人安排");
+    }
+  });
+});
 
 describe("feedback periods and subject defaults", () => {
   it("reopens a newly edited monthly draft instead of a later-dated legacy lesson", () => {
@@ -150,6 +259,30 @@ describe("facts, drafts, and faithful local organization", () => {
 });
 
 describe("generated content provenance and concurrent edits", () => {
+  it("keeps the pre-style signature unchanged for omitted or empty references", () => {
+    const session = fixture();
+    const observations = emptyObservations();
+    const legacySignature = generationSignature("evening", session.brief!, observations, "初二", session.lessonAt);
+    expect(legacySignature).toBe("fnv-5abb1c46e41fcc12");
+    expect(generationSignature("evening", session.brief!, observations, "初二", session.lessonAt, "")).toBe(legacySignature);
+  });
+
+  it("tracks reference edits without leaking one module's reference into another signature", () => {
+    const session = fixture();
+    const observations = { ...emptyObservations(), performance: "能口述运算过程" };
+    const signature = (module: "one-to-one" | "evening" | "course", reference: string) =>
+      generationSignature(module, session.brief!, observations, "初二", session.lessonAt, reference);
+    const weekly = signature("evening", "先讲本周变化，再说明下周安排。");
+    const changedWeekly = signature("evening", "以学科分段，保持简洁。");
+    const monthly = signature("course", "概括本月的学习阶段。");
+    expect(weekly).not.toBe(signature("evening", ""));
+    expect(changedWeekly).not.toBe(weekly);
+    expect(monthly).not.toBe(weekly);
+    expect(signature("course", "先讲本周变化，再说明下周安排。")).not.toBe(weekly);
+    expect(signature("evening", "先讲本周变化，再说明下周安排。")).toBe(weekly);
+    expect(entryIsStale({ studentId: "student-1", content: "此前反馈", generatedFrom: weekly }, changedWeekly)).toBe(true);
+  });
+
   it("uses a compact stable signature independent of record key insertion order", () => {
     const session = fixture();
     const first = {

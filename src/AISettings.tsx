@@ -161,7 +161,7 @@ export default function AISettings({ onClose }: { onClose: () => void }) {
               </label>
             )}
             <div className="settings-disclosure">
-              点击生成时，会将本次共用内容、年级和当前学生的简短记录发送给你配置的服务。程序不主动附带姓名、学校、电话或家长信息；请避免在自由文本中填写这些信息。
+              生成反馈或推荐记录时，会将本次课程信息、年级、当前学生的简短记录，以及本模块已保存的风格参考发送给你配置的服务。程序不主动附带姓名、学校、电话或家长信息；请避免在记录或范文中填写这些信息。
             </div>
             {message && (
               <p className="settings-success" role="status">

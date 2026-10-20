@@ -332,7 +332,7 @@ function array(value: unknown, label: string, max: number): unknown[] {
 }
 
 function feedbackBrief(value: unknown): FeedbackBrief {
-  const row = object(value, "反馈共用内容");
+  const row = object(value, "反馈课程信息");
   const periodStart = calendarDate(row.periodStart, "反馈开始日期");
   const periodEnd = calendarDate(row.periodEnd, "反馈结束日期");
   if (
@@ -354,7 +354,7 @@ function feedbackBrief(value: unknown): FeedbackBrief {
     periodStart,
     periodEnd,
     subjects,
-    teachingContent: string(row.teachingContent, "共用教学内容", 5000),
+    teachingContent: string(row.teachingContent, "教学内容", 5000),
     commonTasks: string(row.commonTasks, "共用作业任务", 5000),
     focus: string(row.focus, "本次反馈重点", 5000),
     length: row.length,
@@ -380,7 +380,7 @@ function studentObservations(value: unknown): StudentObservations {
     strengths: string(row.strengths, "进步与闪光点事实", 2000),
     difficulties: string(row.difficulties, "困难与问题事实", 2000),
     plan: string(row.plan, "后续建议事实", 2000),
-    tasks: string(row.tasks, "作业任务事实", 2000),
+    tasks: string(row.tasks, "作业任务事实", 8000),
     subjects,
   };
 }
@@ -507,6 +507,16 @@ export function parseBackup(text: string): AppData {
     };
   });
   const result: AppData = { schemaVersion: 1, students, classes, records };
+  if (Object.hasOwn(source, "feedbackStyles")) {
+    const references = object(source.feedbackStyles, "反馈风格参考");
+    const styles: NonNullable<AppData["feedbackStyles"]> = {};
+    for (const [module, reference] of Object.entries(references)) {
+      if (module !== "one-to-one" && module !== "evening" && module !== "course")
+        throw new Error("反馈风格参考只能属于一对一、晚辅或班课模块");
+      styles[module] = string(reference, "反馈风格参考", 12_000);
+    }
+    result.feedbackStyles = styles;
+  }
   // Keep the original schema-v1 shape when restoring a pre-feedback backup.
   if (Object.hasOwn(source, "feedbackSessions")) {
     const studentMap = new Map(

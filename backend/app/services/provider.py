@@ -4,6 +4,7 @@ from __future__ import annotations
 import httpx
 
 from .settings import SettingsStore, SettingsUnavailable
+from .suggestions import parse_suggestions
 
 
 class ProviderError(Exception):
@@ -19,6 +20,12 @@ class AIProvider:
         self.transport = transport
 
     def complete(self, messages: list[dict[str, str]]) -> dict[str, str]:
+        return self._complete(messages, suggestions=False)
+
+    def suggest(self, messages: list[dict[str, str]]) -> dict:
+        return self._complete(messages, suggestions=True)
+
+    def _complete(self, messages: list[dict[str, str]], *, suggestions: bool) -> dict:
         try:
             settings = self.settings.read_private()
         except SettingsUnavailable:
@@ -60,6 +67,16 @@ class AIProvider:
             # Never let a configured secret cross the public API boundary.
             if settings["apiKey"] and settings["apiKey"] in content:
                 raise ProviderError("AI 服务响应包含敏感配置，已阻止返回，请检查服务端设置。")
+            if suggestions:
+                try:
+                    result = parse_suggestions(content)
+                except (ValueError, TypeError, RecursionError):
+                    raise ProviderError("AI 服务返回的建议格式不正确，请重试；每条建议须为 240 字以内的有效表达。") from None
+                # JSON escapes are decoded before returning suggestions. Check the
+                # decoded values as well so an escaped secret cannot cross the API.
+                if settings["apiKey"] and any(settings["apiKey"] in item["text"] for item in result["suggestions"]):
+                    raise ProviderError("AI 服务响应包含敏感配置，已阻止返回，请检查服务端设置。")
+                return result
             return {"content": content.strip(), "model": settings["model"]}
         except ProviderError:
             raise

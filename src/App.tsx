@@ -386,6 +386,12 @@ export default function App() {
       "本次课程反馈已保存",
     );
   }
+  async function saveFeedbackStyle(module: ModuleId, reference: string) {
+    return persist(
+      { ...data, feedbackStyles: { ...data.feedbackStyles, [module]: reference } },
+      `${MODULES[module].title}的个人风格参考已保存`,
+    );
+  }
   async function copyPersonalFeedback(
     session: FeedbackSession,
     target: Student,
@@ -1166,6 +1172,8 @@ export default function App() {
                     classId={null}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    styleReference={data.feedbackStyles?.[student.module] ?? ""}
+                    onSaveStyle={(reference) => saveFeedbackStyle(student.module, reference)}
                     onConfigureAI={() => setModal({ kind: "ai" })}
                     onDirtyChange={markFeedbackDirty}
                   />
@@ -1467,6 +1475,8 @@ export default function App() {
                     className={group.name}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    styleReference={data.feedbackStyles?.[group.module] ?? ""}
+                    onSaveStyle={(reference) => saveFeedbackStyle(group.module, reference)}
                     onConfigureAI={() => setModal({ kind: "ai" })}
                     onDirtyChange={markFeedbackDirty}
                   />

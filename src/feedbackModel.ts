@@ -25,6 +25,41 @@ export function normalizeObservations(
     : emptyObservations();
 }
 
+/** Combine legacy one-on-one task fields without dropping either set of notes. */
+export function mergeLessonTasks(commonTasks: string, tasks: string): string {
+  const common = commonTasks.trim();
+  const individual = tasks.trim();
+  if (!common) return individual;
+  if (!individual || common === individual) return common;
+  return `${common}\n${individual}`;
+}
+
+export function normalizeOneToOneTasks(
+  session: FeedbackSession,
+): FeedbackSession {
+  if (
+    session.module !== "one-to-one" ||
+    !session.brief ||
+    session.entries.length !== 1
+  ) {
+    return session;
+  }
+  const entry = session.entries[0];
+  const priorTasks = entry.observations?.tasks ?? "";
+  const tasks = mergeLessonTasks(session.brief.commonTasks, priorTasks);
+  if (session.brief.commonTasks === "" && tasks === priorTasks) return session;
+  return {
+    ...session,
+    brief: { ...session.brief, commonTasks: "" },
+    entries: [
+      {
+        ...entry,
+        observations: { ...normalizeObservations(entry.observations), tasks },
+      },
+    ],
+  };
+}
+
 export function defaultSubjects(module: ModuleId, grades: string[]): string[] {
   if (module !== "evening") return ["数学"];
   if (grades.some((grade) => /初三|九年级|9年级/.test(grade)))
@@ -111,8 +146,9 @@ export function generationSignature(
   observations: StudentObservations,
   grade: string,
   lessonAt = "",
+  styleReference = "",
 ): string {
-  const source = JSON.stringify([
+  const inputs: unknown[] = [
     module,
     grade,
     lessonAt,
@@ -131,7 +167,10 @@ export function generationSignature(
     Object.entries(observations.subjects).sort(([a], [b]) =>
       a < b ? -1 : a > b ? 1 : 0,
     ),
-  ]);
+  ];
+  // Keep signatures from pre-style versions valid when no reference is provided.
+  if (styleReference) inputs.push(styleReference);
+  const source = JSON.stringify(inputs);
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
   for (let index = 0; index < source.length; index++) {
@@ -155,7 +194,10 @@ export function outlineFeedback(
   brief: FeedbackBrief,
   observations: StudentObservations,
 ): string {
-  if (!hasObservations(observations)) return "";
+  if (
+    !hasObservations(observations) &&
+    !(module === "one-to-one" && brief.commonTasks.trim())
+  ) return "";
   const lines: string[] = [];
   const section = (label: string, content: string) => {
     if (content.trim()) lines.push(`${label}\n${content.trim()}`);
@@ -174,8 +216,12 @@ export function outlineFeedback(
   section("做得好的地方", observations.strengths);
   section("需要关注的地方", observations.difficulties);
   section("下一步安排", observations.plan);
-  section("共同任务", brief.commonTasks);
-  section("个人任务", observations.tasks);
+  if (module === "one-to-one") {
+    section("课后任务", mergeLessonTasks(brief.commonTasks, observations.tasks));
+  } else {
+    section("共同任务", brief.commonTasks);
+    section("个人任务", observations.tasks);
+  }
   return lines.join("\n\n");
 }
 

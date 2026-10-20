@@ -401,6 +401,51 @@ describe("backup integrity", () => {
   });
 });
 
+describe("module-specific feedback style backups", () => {
+  it("round-trips all module references without changing whitespace or mixing modules", () => {
+    const feedbackStyles = {
+      "one-to-one": "  先说明本节课的掌握情况。\n再给具体练习建议。  ",
+      evening: "用一周的观察概括不同学科，不逐日罗列。",
+      course: "本月学习进展分两段说明。",
+    };
+    const data = { ...feedbackFixture(), feedbackStyles };
+    const restored = decode(data);
+    expect(restored).toEqual(data);
+    expect(decode(restored)).toEqual(data);
+    expect(restored.feedbackStyles).not.toBe(feedbackStyles);
+  });
+
+  it("preserves absent, partial, empty-object and explicit empty-string settings", () => {
+    expect(Object.hasOwn(decode(minimal), "feedbackStyles")).toBe(false);
+    expect(decode(minimal)).toEqual(minimal);
+    for (const feedbackStyles of [{}, { evening: "" }, { "one-to-one": "单人风格" }]) {
+      expect(decode({ ...minimal, feedbackStyles }).feedbackStyles).toEqual(feedbackStyles);
+    }
+    const partial = decode({ ...minimal, feedbackStyles: { evening: "晚辅风格" } });
+    expect(Object.hasOwn(partial.feedbackStyles!, "course")).toBe(false);
+    expect(Object.hasOwn(partial.feedbackStyles!, "one-to-one")).toBe(false);
+  });
+
+  it.each(["one-to-one", "evening", "course"])("accepts the exact reference limit for %s and rejects one extra character", (module) => {
+    const reference = "参".repeat(12_000);
+    expect(decode({ ...minimal, feedbackStyles: { [module]: reference } }).feedbackStyles).toEqual({ [module]: reference });
+    expect(() => decode({ ...minimal, feedbackStyles: { [module]: `${reference}多` } })).toThrow("12000");
+  });
+
+  it.each(["shared", "oneToOne", "constructor", "__proto__", "", "course "])("rejects unrecognized or prototype-style module key %s", (module) => {
+    const feedbackStyles = Object.fromEntries([[module, "不应跨模块使用的参考"]]);
+    expect(() => decode({ ...minimal, feedbackStyles })).toThrow("模块");
+  });
+
+  it.each([null, [], "文本", 0, false])("rejects a non-object feedbackStyles value", (feedbackStyles) => {
+    expect(() => decode({ ...minimal, feedbackStyles })).toThrow("反馈风格参考");
+  });
+
+  it.each([null, 42, true, {}, []])("rejects a non-string module reference", (reference) => {
+    expect(() => decode({ ...minimal, feedbackStyles: { evening: reference } })).toThrow("反馈风格参考");
+  });
+});
+
 describe("course feedback backups", () => {
   it("keeps legacy schema-v1 backups unchanged and preserves a supplied empty feedback list", () => {
     expect(decode(minimal)).toEqual(minimal);
@@ -639,6 +684,19 @@ describe("structured feedback draft backups", () => {
     expect(decode(data)).toEqual(data);
   });
 
+  it("round-trips a merged one-to-one task without truncating legacy fields", () => {
+    const data = feedbackFixture();
+    const tasks = `${"甲".repeat(5000)}\n${"乙".repeat(2000)}`;
+    data.feedbackSessions[0].entries[0] = {
+      studentId: student.id,
+      content: "",
+      observations: { ...observationFixture(), tasks },
+    };
+    expect(decode(data)).toEqual(data);
+    data.feedbackSessions[0].entries[0].observations!.tasks = "字".repeat(8001);
+    expect(() => decode(data)).toThrow("作业任务事实");
+  });
+
   it("allows a subject-only observation draft before generating prose", () => {
     const data = feedbackFixture();
     data.feedbackSessions[0].entries[0] = {
@@ -778,7 +836,7 @@ describe("structured feedback draft backups", () => {
       { ...observationFixture(), strengths: "字".repeat(2001) },
       { ...observationFixture(), difficulties: "字".repeat(2001) },
       { ...observationFixture(), plan: "字".repeat(2001) },
-      { ...observationFixture(), tasks: "字".repeat(2001) },
+      { ...observationFixture(), tasks: "字".repeat(8001) },
       { ...observationFixture(), subjects: [] },
       { ...observationFixture(), subjects: { " ": "事实" } },
       { ...observationFixture(), subjects: { ["科".repeat(51)]: "事实" } },

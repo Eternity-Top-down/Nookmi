@@ -32,7 +32,9 @@ Text = Annotated[StrictStr, AfterValidator(valid_unicode)]
 Identifier = Annotated[Text, Field(max_length=128), AfterValidator(nonblank)]
 Text2000 = Annotated[Text, Field(max_length=2000)]
 Text5000 = Annotated[Text, Field(max_length=5000)]
+Text8000 = Annotated[Text, Field(max_length=8000)]
 Text10000 = Annotated[Text, Field(max_length=10000)]
+Text12000 = Annotated[Text, Field(max_length=12000)]
 
 
 def valid_day(value: str) -> str:
@@ -141,7 +143,7 @@ class StudentObservations(Model):
     strengths: Text2000
     difficulties: Text2000
     plan: Text2000
-    tasks: Text2000
+    tasks: Text8000
     subjects: Annotated[
         dict[Annotated[Text, Field(max_length=50)], Text2000],
         Field(max_length=10),
@@ -205,6 +207,8 @@ class FeedbackSession(OptionalFieldsModel):
         if len(set(ids)) != len(ids):
             raise ValueError("同一次课程反馈中存在重复学生")
         if not any(entry.has_text() for entry in self.entries) and not (self.brief and self.brief.has_text()):
+            if self.module == "one-to-one":
+                raise ValueError("请先填写本次课程内容、学生事实或反馈正文")
             raise ValueError("请先填写学生事实、反馈内容或课程共用内容")
         return self
 
@@ -215,6 +219,7 @@ class AppData(OptionalFieldsModel):
     classes: Annotated[list[ClassGroup], Field(max_length=5000)]
     records: Annotated[list[TeachingRecord], Field(max_length=100_000)]
     feedbackSessions: Annotated[list[FeedbackSession], Field(max_length=20_000)] | None = None
+    feedbackStyles: Annotated[dict[Module, Text12000], Field(max_length=3)] | None = None
 
     @field_validator("schemaVersion", mode="before")
     @classmethod
@@ -320,6 +325,7 @@ class GenerateRequest(Model):
     brief: FeedbackBrief
     observations: StudentObservations
     grade: Annotated[Text, Field(max_length=50)]
+    styleReference: Text12000 = ""
 
     @model_validator(mode="after")
     def require_personal_facts(self) -> Self:
@@ -327,5 +333,21 @@ class GenerateRequest(Model):
             self.observations.performance, self.observations.strengths,
             self.observations.difficulties, *self.observations.subjects.values(),
         )):
+            if self.module == "one-to-one":
+                raise ValueError("请先填写这位学生在本次课的实际观察，不能仅凭课程内容或课后任务生成反馈")
             raise ValueError("请先填写这位学生的实际观察，不能仅凭共用内容生成个人反馈")
         return self
+
+
+class FeedbackSuggestion(Model):
+    field: Literal["performance", "strengths", "difficulties", "plan"]
+    text: Annotated[Text, Field(max_length=240), AfterValidator(nonblank)]
+
+    @field_validator("text")
+    @classmethod
+    def trim_text(cls, value: str) -> str:
+        return value.strip()
+
+
+class FeedbackSuggestions(Model):
+    suggestions: Annotated[list[FeedbackSuggestion], Field(min_length=1, max_length=6)]

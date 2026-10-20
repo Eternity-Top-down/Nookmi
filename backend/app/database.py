@@ -28,6 +28,9 @@ class Database:
                     feedback_present INTEGER NOT NULL DEFAULT 0
                 );
                 INSERT OR IGNORE INTO workspace_meta(id) VALUES (1);
+                CREATE TABLE IF NOT EXISTS workspace_preferences (
+                    key TEXT PRIMARY KEY, value TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS classes (
                     id TEXT PRIMARY KEY, module TEXT NOT NULL,
                     position INTEGER NOT NULL, payload TEXT NOT NULL
@@ -91,6 +94,11 @@ class Database:
                 session["entries"] = entries.get(row["id"], [])
                 sessions.append(session)
             data["feedbackSessions"] = sessions
+        preference = connection.execute(
+            "SELECT value FROM workspace_preferences WHERE key=?", ("feedbackStyles",),
+        ).fetchone()
+        if preference is not None:
+            data["feedbackStyles"] = json.loads(preference["value"])
         return {"data": data, "revision": meta["revision"]}
 
     def read(self) -> dict:
@@ -110,6 +118,12 @@ class Database:
                     raise RevisionConflict()
                 for table in ("feedback_entries", "feedback_sessions", "records", "students", "classes"):
                     connection.execute(f"DELETE FROM {table}")
+                connection.execute("DELETE FROM workspace_preferences WHERE key=?", ("feedbackStyles",))
+                if "feedbackStyles" in payload:
+                    connection.execute(
+                        "INSERT INTO workspace_preferences(key,value) VALUES (?,?)",
+                        ("feedbackStyles", self.encode(payload["feedbackStyles"])),
+                    )
                 for index, row in enumerate(payload["classes"]):
                     connection.execute("INSERT INTO classes VALUES (?,?,?,?)", (row["id"], row["module"], index, self.encode(row)))
                 for index, row in enumerate(payload["students"]):

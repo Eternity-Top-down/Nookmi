@@ -81,6 +81,7 @@ export interface AppData {
   classes: ClassGroup[];
   records: TeachingNote[];
   feedbackSessions?: FeedbackSession[];
+  feedbackStyles?: Partial<Record<ModuleId, string>>;
 }
 
 export interface ImportRow {

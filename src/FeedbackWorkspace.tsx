@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { ApiError, generateFeedback } from "./api";
 import { Modal } from "./components";
+import FeedbackStyleReference from "./FeedbackStyleReference";
+import FeedbackSuggestions from "./FeedbackSuggestions";
 import { newId } from "./data";
 import {
   copyFeedbackText,
@@ -36,6 +38,7 @@ import {
   hasObservations,
   hasPersonalFacts,
   normalizeObservations,
+  normalizeOneToOneTasks,
   outlineFeedback,
   sortFeedbackByRecentEdit,
 } from "./feedbackModel";
@@ -57,6 +60,8 @@ interface FeedbackWorkspaceProps {
   className?: string;
   sessions: FeedbackSession[];
   onSave: (session: FeedbackSession) => Promise<boolean>;
+  styleReference?: string;
+  onSaveStyle?: (reference: string) => Promise<boolean>;
   onDirtyChange?: (dirty: boolean) => void;
   onConfigureAI?: () => void;
   readonly?: boolean;
@@ -121,13 +126,14 @@ function entryFor(session: FeedbackSession, id: string): FeedbackEntry {
     }
   );
 }
-function sourceSignature(session: FeedbackSession, student: Student) {
+function sourceSignature(session: FeedbackSession, student: Student, styleReference = "") {
   return generationSignature(
     session.module,
     session.brief!,
     normalizeObservations(entryFor(session, student.id).observations),
     student.grade,
     session.lessonAt,
+    styleReference,
   );
 }
 function makeDraft(
@@ -145,7 +151,7 @@ function makeDraft(
         students.map((student) => student.grade),
         saved ? new Date(saved.lessonAt) : new Date(),
       );
-  return {
+  return normalizeOneToOneTasks({
     ...(saved ?? {
       id: newId(),
       module,
@@ -173,7 +179,7 @@ function makeDraft(
         observations: normalizeObservations(prior?.observations),
       };
     }),
-  };
+  });
 }
 export default function FeedbackWorkspace({
   module,
@@ -183,6 +189,8 @@ export default function FeedbackWorkspace({
   className,
   sessions,
   onSave,
+  styleReference = "",
+  onSaveStyle,
   onDirtyChange,
   onConfigureAI,
   readonly = false,
@@ -212,6 +220,9 @@ export default function FeedbackWorkspace({
   const [copying, setCopying] = useState(false);
   const [needsConfiguration, setNeedsConfiguration] = useState(false);
   const [historyLimit, setHistoryLimit] = useState(20);
+  const [styleDirty, setStyleDirty] = useState(false);
+  const [suggestionsBusy, setSuggestionsBusy] = useState(false);
+  const styleRef = useRef(styleReference);
   const draftRef = useRef(draft);
   const studentsRef = useRef(students);
   studentsRef.current = students;
@@ -250,7 +261,9 @@ export default function FeedbackWorkspace({
     const entry = entryFor(draft, student.id);
     return !entry.content.trim() && hasPersonalFacts(entry.observations);
   });
-  const currentSignature = selected ? sourceSignature(draft, selected) : "";
+  const currentSignature = selected
+    ? sourceSignature(draft, selected, selectedEntry?.generationSource === "outline" ? "" : styleReference)
+    : "";
   const stale = Boolean(
     selectedEntry &&
       !selectedEntry.reviewed &&
@@ -265,6 +278,7 @@ export default function FeedbackWorkspace({
         ? "晚辅周反馈"
         : "班课月反馈";
   const activeBrief = draft.brief!;
+  const isOneToOne = module === "one-to-one";
 
   function updateDraft(updater: (current: FeedbackSession) => FeedbackSession) {
     const next = updater(draftRef.current);
@@ -331,7 +345,7 @@ export default function FeedbackWorkspace({
     contextVersion.current++;
     if (controller.current)
       cancelGeneration(
-        "共用信息已修改，已停止当前生成。已有正文保留，请重新核对。",
+        `${isOneToOne ? "课程信息" : "共用信息"}已修改，已停止当前生成。已有正文保留，请重新核对。`,
       );
     else setStatus(null);
     updateDraft((current) => ({
@@ -369,7 +383,7 @@ export default function FeedbackWorkspace({
   }
   function requestSession(session?: FeedbackSession) {
     if (session?.id === draft.id) return;
-    if (dirty || progress) {
+    if (dirty || progress || suggestionsBusy) {
       setConfirmation({
         title: "切换前处理当前反馈",
         message:
@@ -380,8 +394,16 @@ export default function FeedbackWorkspace({
     } else loadSession(session);
   }
   useEffect(() => {
-    dirtyCallback.current?.(dirty || Boolean(progress));
-  }, [dirty, progress]);
+    dirtyCallback.current?.(dirty || styleDirty || suggestionsBusy || Boolean(progress));
+  }, [dirty, styleDirty, suggestionsBusy, progress]);
+  useEffect(() => {
+    if (styleRef.current === styleReference) return;
+    styleRef.current = styleReference;
+    contextVersion.current++;
+    if (controller.current) {
+      cancelGeneration("风格参考已更新，已停止当前生成。请使用新参考重新生成。已有正文保留。");
+    }
+  }, [styleReference]);
   useEffect(
     () => () => {
       epoch.current++;
@@ -448,7 +470,7 @@ export default function FeedbackWorkspace({
         (value) => value.length > 5000,
       )
     ) {
-      setStatus({ text: "每项共用内容不能超过 5000 字。", error: true });
+      setStatus({ text: "每项课程信息不能超过 5000 字。", error: true });
       return false;
     }
     for (const entry of current.entries) {
@@ -463,13 +485,13 @@ export default function FeedbackWorkspace({
           notes.strengths,
           notes.difficulties,
           notes.plan,
-          notes.tasks,
           ...Object.values(notes.subjects),
         ].some((value) => value.length > 2000) ||
+        notes.tasks.length > 8000 ||
         entry.content.length > 10000
       ) {
         setStatus({
-          text: "每位学生最多记录 10 个科目，每条个人记录不超过 2000 字，反馈正文不超过 10000 字。请检查并精简后重试。",
+          text: "最多记录 10 个科目，每条课堂记录不超过 2000 字，课后任务不超过 8000 字，反馈正文不超过 10000 字。请检查并精简后重试。",
           error: true,
         });
         return false;
@@ -491,7 +513,7 @@ export default function FeedbackWorkspace({
     const saved = snapshotForSave();
     if (!hasFeedbackContent(saved)) {
       setStatus({
-        text: "先填写一点共用内容、学生记录或反馈正文，再保存草稿。",
+        text: "先填写一点课程内容、学生记录或反馈正文，再保存草稿。",
         error: true,
       });
       return;
@@ -556,7 +578,7 @@ export default function FeedbackWorkspace({
     const entry = entryFor(current, student.id);
     if (!hasObservations(entry.observations)) {
       setStatus({
-        text: "请先写下这位学生的真实记录或个人安排，再整理草稿。",
+        text: "请先写下学生的真实记录或课后任务，再整理草稿。",
         error: true,
       });
       return;
@@ -590,7 +612,12 @@ export default function FeedbackWorkspace({
     }
   }
   async function runGeneration(targets: Student[], single = false) {
-    if (readonly || controller.current || !validateContext()) return;
+    if (readonly || controller.current || suggestionsBusy || !validateContext()) return;
+    if (styleDirty) {
+      setStatus({ text: "请先保存或撤销风格参考的修改，再生成反馈。", error: true });
+      return;
+    }
+    const generationStyle = styleRef.current;
     if (!targets.length) {
       setStatus({
         text: "先补充学生的实际表现、亮点、困难或分科情况；仅有建议与任务不足以生成反馈。",
@@ -630,7 +657,7 @@ export default function FeedbackWorkspace({
         continue;
       }
       const started = revision(student.id);
-      const signature = sourceSignature(current, student);
+      const signature = sourceSignature(current, student, generationStyle);
       summary.name = student.name;
       setProgress({ ...summary });
       try {
@@ -640,6 +667,7 @@ export default function FeedbackWorkspace({
             brief: structuredClone(current.brief!),
             observations: normalizeObservations(entry.observations),
             grade: student.grade,
+            styleReference: generationStyle,
           },
           abortController.signal,
         );
@@ -702,7 +730,9 @@ export default function FeedbackWorkspace({
       setStatus(
         (previous) =>
           previous ?? {
-            text: `生成完成：${summary.success} 位成功，${summary.failed} 位失败，${summary.skipped} 位跳过。请逐一核对后复制。`,
+            text: isOneToOne
+              ? (summary.failed ? "本次生成未完成，请查看下方原因后重试。" : "反馈已生成，请核对后复制。")
+              : `生成完成：${summary.success} 位成功，${summary.failed} 位失败，${summary.skipped} 位跳过。请逐一核对后复制。`,
             error: summary.failed > 0,
           },
       );
@@ -783,7 +813,11 @@ export default function FeedbackWorkspace({
         <div>
           <span className="fb-eyebrow">LESS WRITING · MORE TEACHING</span>
           <h2>{title}</h2>
-          <p>共用内容写一次，个人情况记短句，生成后核对再复制。</p>
+          <p>
+            {isOneToOne
+              ? "记录这节课学了什么、掌握得怎样，以及建议和课后任务，生成后核对再复制。"
+              : "共用内容写一次，个人情况记短句，生成后核对再复制。"}
+          </p>
         </div>
         <div className="fb-heading-actions">
           {onConfigureAI && (
@@ -808,6 +842,15 @@ export default function FeedbackWorkspace({
           )}
         </div>
       </div>
+      {onSaveStyle && (
+        <FeedbackStyleReference
+          module={module}
+          value={styleReference}
+          onSave={onSaveStyle}
+          onDirtyChange={setStyleDirty}
+          disabled={readonly || Boolean(progress) || suggestionsBusy}
+        />
+      )}
       <section className="fb-common">
         <div className="fb-section-title">
           <h3>
@@ -918,7 +961,7 @@ export default function FeedbackWorkspace({
             </select>
           </label>
         </div>
-        <div className="fb-common-fields">
+        <div className={`fb-common-fields ${isOneToOne ? "fb-lesson-fields" : ""}`}>
           <label className="field">
             {periodName}教学 / 学习内容 <small>选填</small>
             <textarea
@@ -938,7 +981,7 @@ export default function FeedbackWorkspace({
               }
             />
           </label>
-          <label className="field">
+          {!isOneToOne && <label className="field">
             {module === "course" ? "全班安排 / 共性提醒" : "共同课后任务"}{" "}
             <small>选填</small>
             <textarea
@@ -955,7 +998,7 @@ export default function FeedbackWorkspace({
                 changeBrief({ commonTasks: event.target.value })
               }
             />
-          </label>
+          </label>}
         </div>
         <details className="fb-optional">
           <summary>
@@ -995,10 +1038,12 @@ export default function FeedbackWorkspace({
       <div className="fb-work-heading">
         <div>
           <h3>
-            <span>02</span>记录个人情况，核对家长反馈
+            <span>02</span>{isOneToOne ? "本节课表现与课后安排" : "记录个人情况，核对家长反馈"}
           </h3>
           <p>
-            {filledCount} 人已有正文 · {reviewedCount} 人已核对
+            {isOneToOne
+              ? "填写简短观察，编辑并核对反馈正文。"
+              : `${filledCount} 人已有正文 · ${reviewedCount} 人已核对`}
             {module === "evening"
               ? " · 初二默认数物，初三默认数物化，科目可在上方调整"
               : ""}
@@ -1008,7 +1053,7 @@ export default function FeedbackWorkspace({
           <button
             type="button"
             className="button button-secondary"
-            disabled={Boolean(progress) || !eligible.length}
+            disabled={Boolean(progress) || suggestionsBusy || styleDirty || !eligible.length}
             onClick={() => void runGeneration(eligible)}
           >
             <Sparkles size={16} />
@@ -1020,8 +1065,9 @@ export default function FeedbackWorkspace({
         <div className="fb-generation-progress" role="status">
           <LoaderCircle size={17} className="fb-spin" />
           <span>
-            正在生成 {progress.name || "反馈"} · {progress.completed} /{" "}
-            {progress.total}，失败 {progress.failed} 位
+            {isOneToOne
+              ? "正在生成本节课反馈…"
+              : `正在生成 ${progress.name || "反馈"} · ${progress.completed} / ${progress.total}，失败 ${progress.failed} 位`}
           </span>
           <button
             type="button"
@@ -1036,8 +1082,8 @@ export default function FeedbackWorkspace({
       {!students.length ? (
         <div className="fb-empty">
           <FileText size={30} />
-          <h3>先记录共用内容，或添加班级学生</h3>
-          <p>学生加入后，就可以逐一补充真实情况并生成反馈。</p>
+          <h3>{isOneToOne ? "请先添加一对一学生" : "先记录共用内容，或添加班级学生"}</h3>
+          <p>{isOneToOne ? "进入学生页面，即可记录这节课并生成反馈。" : "学生加入后，就可以逐一补充真实情况并生成反馈。"}</p>
         </div>
       ) : (
         <div
@@ -1089,52 +1135,50 @@ export default function FeedbackWorkspace({
                 <div className="fb-panel-title">
                   <div>
                     <h3>
-                      {selected.name} <span>个人记录</span>
+                      {selected.name} <span>{isOneToOne ? "本节课记录" : "个人记录"}</span>
                     </h3>
                     <p>只写你实际了解的情况，不必组织成完整段落。</p>
                   </div>
                 </div>
                 {!readonly && (
-                  <div className="fb-quick-notes">
-                    <span>快捷记录 · 点击代表已观察到</span>
-                    <div>
-                      {[
-                        { text: "能主动订正", key: "strengths" as const },
-                        { text: "作业按时完成", key: "performance" as const },
-                        { text: "审题需要提醒", key: "difficulties" as const },
-                        { text: "计算还需检查", key: "difficulties" as const },
-                      ].map((item) => (
-                        <button
-                          type="button"
-                          key={item.text}
-                          onClick={() => {
-                            const previous = observations[item.key];
-                            if (!previous.includes(item.text))
-                              changeObservation(
-                                item.key,
-                                `${previous.trim()}${previous.trim() ? "；" : ""}${item.text}`.slice(
-                                  0,
-                                  2000,
-                                ),
-                              );
-                          }}
-                        >
-                          <Plus size={11} />
-                          {item.text}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  <FeedbackSuggestions
+                    key={`${draft.id}-${selected.id}`}
+                    input={{
+                      module,
+                      brief: activeBrief,
+                      observations,
+                      grade: selected.grade,
+                      styleReference,
+                    }}
+                    disabled={Boolean(progress) || styleDirty}
+                    onBusyChange={setSuggestionsBusy}
+                    onApply={(field, text) => {
+                      const previous = observations[field].trim();
+                      if (previous.includes(text)) {
+                        setStatus({ text: "这条内容已经在记录中。" });
+                        return;
+                      }
+                      const next = `${previous}${previous ? "；" : ""}${text}`;
+                      if (next.length > 2000) {
+                        setStatus({ text: "加入后会超过该栏的 2000 字上限，请先精简记录。", error: true });
+                        return;
+                      }
+                      changeObservation(field, next);
+                      setStatus({ text: "已加入对应记录，请核对内容是否符合实际情况。" });
+                    }}
+                  />
                 )}
                 {OBSERVATION_FIELDS.map((item) => (
                   <label className="field fb-observation" key={item.key}>
-                    {item.label}
+                    {isOneToOne && item.key === "performance" ? "课堂状态与掌握情况" : item.label}
                     <textarea
                       rows={item.key === "performance" ? 2 : 1}
                       value={observations[item.key]}
                       maxLength={2000}
                       readOnly={readonly}
-                      placeholder={item.placeholder}
+                      placeholder={isOneToOne && item.key === "performance"
+                        ? "如：能独立列出方程，移项时偶尔漏变号；遇到难题愿意尝试。"
+                        : item.placeholder}
                       onChange={(event) =>
                         changeObservation(item.key, event.target.value)
                       }
@@ -1185,7 +1229,19 @@ export default function FeedbackWorkspace({
                     ))}
                   </div>
                 )}
-                <details
+                {isOneToOne ? (
+                  <label className="field fb-observation">
+                    课后任务 <small>选填，填写本节课实际布置的作业或复习安排</small>
+                    <textarea
+                      rows={2}
+                      value={observations.tasks}
+                      maxLength={8000}
+                      readOnly={readonly}
+                      placeholder="如：完成讲义第 3 页第 1—4 题，订正今天的两道错题。未布置可留空。"
+                      onChange={(event) => changeObservation("tasks", event.target.value)}
+                    />
+                  </label>
+                ) : <details
                   className="fb-optional"
                   open={Boolean(observations.tasks)}
                 >
@@ -1197,7 +1253,7 @@ export default function FeedbackWorkspace({
                     <textarea
                       rows={2}
                       value={observations.tasks}
-                      maxLength={2000}
+                      maxLength={8000}
                       readOnly={readonly}
                       placeholder="如需单独安排练习，在这里补充。"
                       onChange={(event) =>
@@ -1205,7 +1261,7 @@ export default function FeedbackWorkspace({
                       }
                     />
                   </label>
-                </details>
+                </details>}
                 {!hasPersonalFacts(observations) && (
                   <p className="fb-field-note">
                     填写一条实际表现、亮点、困难或分科情况后，即可生成。建议和任务不会被当作已发生的事实。
@@ -1214,7 +1270,9 @@ export default function FeedbackWorkspace({
                 {!activeBrief.teachingContent.trim() &&
                   hasPersonalFacts(observations) && (
                     <p className="fb-field-note">
-                      未填写共用教学内容，生成时将只依据已记录的个人情况。
+                      {isOneToOne
+                        ? "未填写本节课教学内容，生成时将只依据已记录的课堂情况。"
+                        : "未填写共用教学内容，生成时将只依据已记录的个人情况。"}
                     </p>
                   )}
                 {!readonly && (
@@ -1223,7 +1281,7 @@ export default function FeedbackWorkspace({
                       type="button"
                       className="button button-primary"
                       disabled={
-                        Boolean(progress) || !hasPersonalFacts(observations)
+                        Boolean(progress) || suggestionsBusy || styleDirty || !hasPersonalFacts(observations)
                       }
                       onClick={() => requestGenerate(selected)}
                     >
@@ -1246,6 +1304,7 @@ export default function FeedbackWorkspace({
                     <small>整理草稿不调用 AI，不添加未记录的事实。</small>
                   </div>
                 )}
+                {styleDirty && <p className="fb-field-note">风格参考有未保存修改，请先保存或撤销，再使用 AI 生成。</p>}
                 {failures.has(selected.id) && (
                   <p className="fb-inline-error" role="alert">
                     {failures.get(selected.id)}
@@ -1268,7 +1327,7 @@ export default function FeedbackWorkspace({
                 </div>
                 {stale && (
                   <div className="fb-stale" role="status">
-                    原始记录已修改，正文仍保留旧内容。请重新生成，或修改并再次核对。
+                    生成依据已更新，正文仍保留旧内容。请重新生成，或修改并再次核对。
                   </div>
                 )}
                 <label
@@ -1339,7 +1398,9 @@ export default function FeedbackWorkspace({
       <div className="fb-savebar">
         <p>
           <CheckCheck size={16} />
-          已核对 {reviewedCount} / {students.length} 人
+          {isOneToOne
+            ? (reviewedCount ? "本次反馈已核对" : "本次反馈待核对")
+            : `已核对 ${reviewedCount} / ${students.length} 人`}
           <span>{dirty ? "修改尚未保存" : "草稿可随时继续补充"}</span>
         </p>
         <div>
@@ -1395,7 +1456,11 @@ export default function FeedbackWorkspace({
                 >
                   <strong>{formatFeedbackPeriod(session)}</strong>
                   <span>
-                    {
+                    {isOneToOne ? (
+                      session.entries[0]?.content.trim()
+                        ? (session.entries[0].reviewed ? "已核对" : "待核对")
+                        : "已记录，待完成正文"
+                    ) : <>{
                       session.entries.filter((entry) => entry.content.trim())
                         .length
                     }{" "}
@@ -1405,7 +1470,7 @@ export default function FeedbackWorkspace({
                         (entry) => entry.reviewed && entry.content.trim(),
                       ).length
                     }{" "}
-                    人已核对
+                    人已核对</>}
                   </span>
                 </button>
               ))}
