@@ -35,11 +35,28 @@ export interface TeachingNote {
   createdAt: string;
 }
 
+export interface FeedbackEntry {
+  studentId: string;
+  content: string;
+}
+
+export interface FeedbackSession {
+  id: string;
+  module: ModuleId;
+  classId: string | null;
+  studentId: string | null;
+  lessonAt: string;
+  entries: FeedbackEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppData {
   schemaVersion: 1;
   students: Student[];
   classes: ClassGroup[];
   records: TeachingNote[];
+  feedbackSessions?: FeedbackSession[];
 }
 
 export interface ImportRow {

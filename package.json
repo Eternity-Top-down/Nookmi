@@ -1,6 +1,6 @@
 {
   "name": "nookmi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "面向数学教师的一对一、晚辅与班课工作台",

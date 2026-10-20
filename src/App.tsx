@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -8,6 +14,7 @@ import {
   Check,
   ChevronRight,
   ClipboardList,
+  Copy,
   Clock3,
   Database,
   FileText,
@@ -16,6 +23,7 @@ import {
   Leaf,
   Menu,
   Moon,
+  MessageSquareText,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -29,18 +37,27 @@ import {
   X,
 } from "lucide-react";
 import { ClassForm, ImportStudents, Modal, StudentForm } from "./components";
+import FeedbackWorkspace from "./FeedbackWorkspace";
+import {
+  copyFeedbackText,
+  formatLessonAt,
+  formatStudentFeedback,
+} from "./feedback";
+import { version } from "../package.json";
 import {
   createDemoData,
   EMPTY_DATA,
   loadData,
   newId,
   parseBackup,
+  pruneFeedbackForStudent,
   saveData,
 } from "./data";
 import { parseRoute, routeUrl, type Route } from "./routes";
 import {
   type AppData,
   type ClassGroup,
+  type FeedbackSession,
   type ModuleId,
   type Student,
   type StudentFields,
@@ -50,21 +67,21 @@ const MODULES = {
   "one-to-one": {
     title: "一对一",
     english: "ONE-ON-ONE",
-    description: "关注每个学生的节奏，让个性化教学从这里开始。",
+    description: "选择学生，填写本次课程反馈，保存后快速复制。",
     icon: UserRound,
     color: "green",
   },
   evening: {
     title: "晚辅",
     english: "EVENING STUDY",
-    description: "把班级有序安排，让每一晚的陪伴更有方向。",
+    description: "进入班级，集中完成每位学生的晚辅反馈。",
     icon: Moon,
     color: "purple",
   },
   course: {
     title: "班课",
     english: "GROUP CLASSES",
-    description: "从一个班级出发，记录每位学生的学习与成长。",
+    description: "按班级整理本次课程反馈，一次保存，逐人复制。",
     icon: BookOpen,
     color: "orange",
   },
@@ -187,11 +204,39 @@ export default function App() {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [noteDate, setNoteDate] = useState(localDate);
   const [noteContent, setNoteContent] = useState("");
+  const [activePanel, setActivePanel] = useState<"feedback" | "details">(
+    "feedback",
+  );
+  const [manualCopy, setManualCopy] = useState<string | null>(null);
+  const feedbackDirty = useRef(false);
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const markFeedbackDirty = useCallback((dirty: boolean) => {
+    feedbackDirty.current = dirty;
+  }, []);
   const backupInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const onHash = () => {
-      setRoute(getRoute());
+      const nextRoute = getRoute();
+      setSidebarOpen(false);
+      if (routeUrl(nextRoute) === routeUrl(routeRef.current)) return;
+      if (feedbackDirty.current) {
+        window.history.replaceState(null, "", routeUrl(routeRef.current));
+        setConfirmation({
+          title: "还有未保存的反馈",
+          message: "离开后会丢失当前修改。可以取消，先保存本次反馈。",
+          label: "放弃修改并离开",
+          action: () => {
+            feedbackDirty.current = false;
+            setConfirmation(null);
+            navigate(nextRoute);
+          },
+        });
+        return;
+      }
+      setRoute(nextRoute);
+      setActivePanel("feedback");
       setQuery("");
       setGradeFilter("");
       setSidebarOpen(false);
@@ -209,9 +254,17 @@ export default function App() {
       setToast({ message: "已同步此浏览器其他页面中的最新数据。" });
     };
     window.addEventListener("storage", onStorage);
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (feedbackDirty.current) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.removeEventListener("hashchange", onHash);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, []);
   useEffect(() => {
@@ -243,9 +296,22 @@ export default function App() {
   const listedStudents = group
     ? moduleStudents.filter((s) => s.classId === group.id)
     : moduleStudents;
-  const moduleRecords = data.records.filter((r) =>
-    moduleStudents.some((s) => s.id === r.studentId),
+  const feedbackSessions = data.feedbackSessions ?? [];
+  const moduleFeedback = feedbackSessions.filter(
+    (s) => s.module === route.module,
   );
+  const scopedFeedback = moduleFeedback.filter((s) =>
+    student?.module === "one-to-one"
+      ? s.studentId === student.id
+      : s.classId === group?.id,
+  );
+  const personalFeedback = scopedFeedback
+    .filter((s) =>
+      s.entries.some(
+        (entry) => entry.studentId === student?.id && entry.content.trim(),
+      ),
+    )
+    .sort((a, b) => b.lessonAt.localeCompare(a.lessonAt));
   const studentRecords = data.records
     .filter((r) => r.studentId === student?.id)
     .sort(
@@ -270,6 +336,70 @@ export default function App() {
   const isEmpty = !data.students.length && !data.classes.length;
   const showStudentList = route.module === "one-to-one" || !!group;
 
+  function changePanel(next: "feedback" | "details") {
+    if (next === activePanel) return;
+    if (feedbackDirty.current) {
+      setConfirmation({
+        title: "还有未保存的反馈",
+        message: "切换页面前，请先保存当前反馈，或确认放弃修改。",
+        label: "放弃修改并切换",
+        action: () => {
+          feedbackDirty.current = false;
+          setConfirmation(null);
+          setActivePanel(next);
+        },
+      });
+    } else setActivePanel(next);
+  }
+  function saveFeedback(session: FeedbackSession) {
+    return persist(
+      {
+        ...data,
+        feedbackSessions: feedbackSessions.some((s) => s.id === session.id)
+          ? feedbackSessions.map((s) => (s.id === session.id ? session : s))
+          : [...feedbackSessions, session],
+      },
+      "本次课程反馈已保存",
+    );
+  }
+  async function copyPersonalFeedback(
+    session: FeedbackSession,
+    target: Student,
+  ) {
+    const text = formatStudentFeedback(session, target, group?.name);
+    try {
+      await copyFeedbackText(text);
+      setToast({ message: "反馈已复制，可以直接粘贴发送。" });
+    } catch {
+      setManualCopy(text);
+    }
+  }
+  function workspaceTabs(personal = false) {
+    return (
+      <div
+        className="work-tabs"
+        role="group"
+        aria-label={personal ? "学生工作页面" : "班级工作页面"}
+      >
+        <button
+          className={activePanel === "feedback" ? "active" : ""}
+          aria-pressed={activePanel === "feedback"}
+          onClick={() => changePanel("feedback")}
+        >
+          <MessageSquareText size={17} />
+          {personal ? "课程反馈" : "班级反馈"}
+        </button>
+        <button
+          className={activePanel === "details" ? "active" : ""}
+          aria-pressed={activePanel === "details"}
+          onClick={() => changePanel("details")}
+        >
+          {personal ? <UserRound size={17} /> : <Users size={17} />}
+          {personal ? "学生档案与笔记" : "学生管理"}
+        </button>
+      </div>
+    );
+  }
   function persist(next: AppData, message: string, recovery = false) {
     if (storageError && !recovery) {
       setToast({
@@ -387,7 +517,7 @@ export default function App() {
     setConfirmation({
       title: `删除学生「${target.name}」？`,
       message:
-        "该学生的个人信息和教学记录会一并删除。此操作无法撤销，建议先导出数据备份。",
+        "该学生的个人信息、课程反馈和教学记录会一并删除。此操作无法撤销，建议先导出数据备份。",
       label: "确认删除",
       danger: true,
       action: () => {
@@ -397,11 +527,16 @@ export default function App() {
               ...data,
               students: data.students.filter((s) => s.id !== target.id),
               records: data.records.filter((r) => r.studentId !== target.id),
+              feedbackSessions: pruneFeedbackForStudent(
+                feedbackSessions,
+                target.id,
+              ),
             },
             "学生已删除",
           )
         ) {
           setConfirmation(null);
+          feedbackDirty.current = false;
           navigate({ module: route.module, classId: group?.id });
         }
       },
@@ -413,7 +548,7 @@ export default function App() {
     );
     setConfirmation({
       title: `删除班级「${target.name}」？`,
-      message: `班级内 ${ids.size} 位学生及其教学记录会一并删除。此操作无法撤销，建议先导出数据备份。`,
+      message: `班级内 ${ids.size} 位学生、课程反馈及教学记录会一并删除。此操作无法撤销，建议先导出数据备份。`,
       label: "删除班级及学生",
       danger: true,
       action: () => {
@@ -424,11 +559,15 @@ export default function App() {
               classes: data.classes.filter((c) => c.id !== target.id),
               students: data.students.filter((s) => !ids.has(s.id)),
               records: data.records.filter((r) => !ids.has(r.studentId)),
+              feedbackSessions: feedbackSessions.filter(
+                (s) => s.classId !== target.id,
+              ),
             },
             "班级已删除",
           )
         ) {
           setConfirmation(null);
+          feedbackDirty.current = false;
           navigate({ module: route.module });
         }
       },
@@ -450,11 +589,12 @@ export default function App() {
       setModal(null);
       setConfirmation({
         title: "恢复这份数据备份？",
-        message: `备份包含 ${restored.classes.length} 个班级、${restored.students.length} 位学生、${restored.records.length} 条教学记录。恢复将替换当前所有模块的数据；建议先导出现有备份。`,
+        message: `备份包含 ${restored.classes.length} 个班级、${restored.students.length} 位学生、${restored.feedbackSessions?.length ?? 0} 次课程反馈、${restored.records.length} 条教学记录。恢复将替换当前所有模块的数据；建议先导出现有备份。`,
         label: "确认替换并恢复",
         action: () => {
           if (persist(restored, "数据备份已恢复", true)) {
             setConfirmation(null);
+            feedbackDirty.current = false;
             navigate({ module: "one-to-one" });
           }
         },
@@ -484,8 +624,8 @@ export default function App() {
             </h2>
             <p>
               {group
-                ? "班级里的每一个名字，都有专属的成长空间。"
-                : "点击学生，进入专属教学空间。"}
+                ? "管理班级名单，点击学生可查看个人反馈。"
+                : "点击学生，开始填写本次一对一课程反馈。"}
             </p>
           </div>
           <div className="section-actions">
@@ -543,10 +683,8 @@ export default function App() {
                     <th>学生姓名</th>
                     <th>年级 / 学校</th>
                     <th>家长 / 联系电话</th>
-                    <th>教学记录</th>
-                    <th>
-                      <span className="sr-only">操作</span>
-                    </th>
+                    <th>已存反馈</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -595,15 +733,21 @@ export default function App() {
                         <span className="record-count">
                           <FileText size={14} />
                           {
-                            data.records.filter((r) => r.studentId === s.id)
-                              .length
+                            feedbackSessions.filter((session) =>
+                              session.entries.some(
+                                (entry) =>
+                                  entry.studentId === s.id &&
+                                  entry.content.trim(),
+                              ),
+                            ).length
                           }{" "}
                           条
                         </span>
                       </td>
                       <td>
-                        <span className="row-arrow">
-                          <ArrowRight size={17} />
+                        <span className="row-feedback-link">
+                          {group ? "查看反馈" : "填写反馈"}
+                          <ArrowRight size={15} />
                         </span>
                       </td>
                     </tr>
@@ -734,7 +878,7 @@ export default function App() {
             <span className="profile-icon">教</span>
             <span>
               <strong>数学老师</strong>
-              <small>个人工作台 · v0.1.0</small>
+              <small>个人工作台 · v{version}</small>
             </span>
             <span className="online-dot" />
           </div>
@@ -899,125 +1043,200 @@ export default function App() {
                   编辑资料
                 </button>
               </div>
-              <div className="student-detail-grid">
-                <section className="content-card profile-card">
-                  <div className="section-heading">
-                    <h2>
-                      <UserRound size={18} />
-                      学生档案
-                    </h2>
-                  </div>
-                  <dl className="profile-list">
-                    {[
-                      ["学生姓名", student.name],
-                      ["所在年级", student.grade],
-                      ["就读学校", student.school],
-                      ["家长姓名", student.guardian],
-                      ["联系电话", student.phone],
-                    ].map(([key, value]) => (
-                      <div key={key}>
-                        <dt>{key}</dt>
-                        <dd>{value || "暂未填写"}</dd>
+              {workspaceTabs(true)}
+              {activePanel === "feedback" ? (
+                student.module === "one-to-one" ? (
+                  <FeedbackWorkspace
+                    key={`student-${student.id}`}
+                    module={student.module}
+                    students={[student]}
+                    studentId={student.id}
+                    classId={null}
+                    sessions={scopedFeedback}
+                    onSave={saveFeedback}
+                    onDirtyChange={markFeedbackDirty}
+                  />
+                ) : (
+                  <section className="content-card personal-feedback">
+                    <div className="section-heading">
+                      <div>
+                        <h2>
+                          个人反馈记录{" "}
+                          <span className="count-pill">
+                            {personalFeedback.length}
+                          </span>
+                        </h2>
+                        <p>本班反馈集中填写，这里查看和复制该学生的反馈。</p>
                       </div>
-                    ))}
-                  </dl>
-                  <div className="profile-note">
-                    <span>学情与备注</span>
-                    <p>
-                      {student.notes ||
-                        "还没有备注。可以记录学生的学习特点、关注事项和教学目标。"}
-                    </p>
-                  </div>
-                  <div className="profile-meta">
-                    建档于 {dateLabel(student.createdAt)}
-                    <button
-                      className="icon-button danger-text"
-                      aria-label={`删除学生${student.name}`}
-                      onClick={() => deleteStudent(student)}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </div>
-                </section>
-                <section className="content-card notes-card">
-                  <div className="section-heading">
-                    <div>
-                      <h2>
-                        教学记录{" "}
-                        <span className="count-pill">
-                          {studentRecords.length}
-                        </span>
-                      </h2>
-                      <p>随手记下课堂表现、学习进展与下次安排。</p>
+                      <button
+                        className="button button-primary"
+                        onClick={() =>
+                          navigate({ module: route.module, classId: group?.id })
+                        }
+                      >
+                        <MessageSquareText size={16} />
+                        去班级填写反馈
+                      </button>
                     </div>
-                    <button
-                      className="button button-primary button-sm"
-                      onClick={openNote}
-                    >
-                      <Plus size={16} />
-                      添加记录
-                    </button>
-                  </div>
-                  {studentRecords.length ? (
-                    <div className="note-list">
-                      {studentRecords.map((record) => (
-                        <article className="teaching-note" key={record.id}>
-                          <div className="note-top">
-                            <span>
-                              <span className="timeline-dot" />
-                              {record.date.replace(/-/g, ".")}
-                            </span>
-                            <button
-                              className="icon-button"
-                              aria-label={`删除${record.date}教学记录`}
-                              onClick={() =>
-                                setConfirmation({
-                                  title: "删除这条教学记录？",
-                                  message: "删除后无法撤销。",
-                                  danger: true,
-                                  label: "删除记录",
-                                  action: () => {
-                                    if (
-                                      persist(
-                                        {
-                                          ...data,
-                                          records: data.records.filter(
-                                            (r) => r.id !== record.id,
-                                          ),
-                                        },
-                                        "教学记录已删除",
-                                      )
-                                    )
-                                      setConfirmation(null);
-                                  },
-                                })
+                    {personalFeedback.length ? (
+                      <div className="note-list">
+                        {personalFeedback.map((session) => (
+                          <article className="teaching-note" key={session.id}>
+                            <div className="note-top">
+                              <span>
+                                <Clock3 size={15} />
+                                {formatLessonAt(session.lessonAt)}
+                              </span>
+                              <button
+                                className="button button-secondary button-sm"
+                                onClick={() =>
+                                  void copyPersonalFeedback(session, student)
+                                }
+                              >
+                                <Copy size={14} />
+                                复制反馈
+                              </button>
+                            </div>
+                            <p>
+                              {
+                                session.entries.find(
+                                  (entry) => entry.studentId === student.id,
+                                )?.content
                               }
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                          <p>{record.content}</p>
-                        </article>
-                      ))}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <EmptyState
+                        icon={<MessageSquareText size={32} />}
+                        title="还没有已保存的反馈"
+                        text="在班级反馈页为这位学生填写内容并保存后，会显示在这里。"
+                      />
+                    )}
+                  </section>
+                )
+              ) : (
+                <div className="student-detail-grid">
+                  <section className="content-card profile-card">
+                    <div className="section-heading">
+                      <h2>
+                        <UserRound size={18} />
+                        学生档案
+                      </h2>
                     </div>
-                  ) : (
-                    <EmptyState
-                      icon={<ClipboardList size={34} strokeWidth={1.3} />}
-                      title="写下第一条教学记录"
-                      text="今天的知识点、一个小小的进步，或下一次课的计划。"
-                      action={
-                        <button
-                          className="button button-secondary"
-                          onClick={openNote}
-                        >
-                          <Plus size={16} />
-                          开始记录
-                        </button>
-                      }
-                    />
-                  )}
-                </section>
-              </div>
+                    <dl className="profile-list">
+                      {[
+                        ["学生姓名", student.name],
+                        ["所在年级", student.grade],
+                        ["就读学校", student.school],
+                        ["家长姓名", student.guardian],
+                        ["联系电话", student.phone],
+                      ].map(([key, value]) => (
+                        <div key={key}>
+                          <dt>{key}</dt>
+                          <dd>{value || "暂未填写"}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <div className="profile-note">
+                      <span>学情与备注</span>
+                      <p>
+                        {student.notes ||
+                          "还没有备注。可以记录学生的学习特点、关注事项和教学目标。"}
+                      </p>
+                    </div>
+                    <div className="profile-meta">
+                      建档于 {dateLabel(student.createdAt)}
+                      <button
+                        className="icon-button danger-text"
+                        aria-label={`删除学生${student.name}`}
+                        onClick={() => deleteStudent(student)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </section>
+                  <section className="content-card notes-card">
+                    <div className="section-heading">
+                      <div>
+                        <h2>
+                          教学记录{" "}
+                          <span className="count-pill">
+                            {studentRecords.length}
+                          </span>
+                        </h2>
+                        <p>随手记下课堂表现、学习进展与下次安排。</p>
+                      </div>
+                      <button
+                        className="button button-primary button-sm"
+                        onClick={openNote}
+                      >
+                        <Plus size={16} />
+                        添加记录
+                      </button>
+                    </div>
+                    {studentRecords.length ? (
+                      <div className="note-list">
+                        {studentRecords.map((record) => (
+                          <article className="teaching-note" key={record.id}>
+                            <div className="note-top">
+                              <span>
+                                <span className="timeline-dot" />
+                                {record.date.replace(/-/g, ".")}
+                              </span>
+                              <button
+                                className="icon-button"
+                                aria-label={`删除${record.date}教学记录`}
+                                onClick={() =>
+                                  setConfirmation({
+                                    title: "删除这条教学记录？",
+                                    message: "删除后无法撤销。",
+                                    danger: true,
+                                    label: "删除记录",
+                                    action: () => {
+                                      if (
+                                        persist(
+                                          {
+                                            ...data,
+                                            records: data.records.filter(
+                                              (r) => r.id !== record.id,
+                                            ),
+                                          },
+                                          "教学记录已删除",
+                                        )
+                                      )
+                                        setConfirmation(null);
+                                    },
+                                  })
+                                }
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                            <p>{record.content}</p>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <EmptyState
+                        icon={<ClipboardList size={34} strokeWidth={1.3} />}
+                        title="写下第一条教学记录"
+                        text="今天的知识点、一个小小的进步，或下一次课的计划。"
+                        action={
+                          <button
+                            className="button button-secondary"
+                            onClick={openNote}
+                          >
+                            <Plus size={16} />
+                            开始记录
+                          </button>
+                        }
+                      />
+                    )}
+                  </section>
+                </div>
+              )}
             </>
           ) : (
             <>
@@ -1082,90 +1301,79 @@ export default function App() {
                   )}
                 </div>
               </div>
-              {!group && (
-                <section className={`welcome-banner banner-${config.color}`}>
-                  <div className="welcome-copy">
-                    <span className="welcome-kicker">
-                      <span />
-                      让教学，井井有条
-                    </span>
-                    <h2>
-                      {route.module === "one-to-one"
-                        ? "每一个学生，都有自己的成长节奏。"
-                        : route.module === "evening"
-                          ? "一份有序的名单，一晚安心的陪伴。"
-                          : "一起学习，也看见每一个人。"}
-                    </h2>
-                    <p>
-                      {route.module === "one-to-one"
-                        ? "学生档案、学情备注、教学记录，在一个地方轻松管理。"
-                        : "创建班级 · 批量录入学生 · 进入个人教学空间"}
-                    </p>
-                  </div>
-                  <div className="math-art" aria-hidden="true">
-                    <div className="art-grid" />
-                    <span className="formula formula-a">y = x²</span>
-                    <svg viewBox="0 0 220 130">
-                      <path
-                        d="M25 105H205M110 120V15"
-                        stroke="currentColor"
-                        opacity=".3"
-                        fill="none"
-                      />
-                      <path
-                        d="M53 25Q110 184 167 25"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                      />
-                      <circle cx="110" cy="104" r="4" fill="currentColor" />
-                      <path
-                        d="m199 101 6 4-6 4m-93-88 4-6 4 6"
-                        fill="none"
-                        stroke="currentColor"
-                      />
-                    </svg>
-                    <span className="formula formula-b">a² + b² = c²</span>
-                    <span className="art-spark">✦</span>
-                  </div>
-                </section>
-              )}
-              {group?.notes && (
+              {group && workspaceTabs()}
+              {group?.notes && activePanel === "details" && (
                 <p className="class-description">
                   <FileText size={16} />
                   {group.notes}
                 </p>
               )}
-              <div className="stats-grid">
-                <StatCard
-                  label={group ? "班级学生" : "在册学生"}
-                  value={listedStudents.length}
-                  suffix="位"
-                  icon={<Users size={22} />}
-                  tone="green"
-                />
-                <StatCard
-                  label={showStudentList ? "覆盖年级" : "教学班级"}
-                  value={showStudentList ? grades.length : classes.length}
-                  suffix={showStudentList ? "个年级" : "个班级"}
-                  icon={<GraduationCap size={23} />}
-                  tone="orange"
-                />
-                <StatCard
-                  label="教学记录"
-                  value={
-                    group
-                      ? data.records.filter((r) =>
-                          listedStudents.some((s) => s.id === r.studentId),
-                        ).length
-                      : moduleRecords.length
-                  }
-                  suffix="条记录"
-                  icon={<ClipboardList size={22} />}
-                  tone="purple"
-                />
-              </div>
-              {showStudentList ? (
+              {!group && (
+                <div className="stats-grid compact-stats">
+                  <StatCard
+                    label={group ? "班级学生" : "在册学生"}
+                    value={listedStudents.length}
+                    suffix="位"
+                    icon={<Users size={22} />}
+                    tone="green"
+                  />
+                  <StatCard
+                    label={showStudentList ? "覆盖年级" : "教学班级"}
+                    value={showStudentList ? grades.length : classes.length}
+                    suffix={showStudentList ? "个年级" : "个班级"}
+                    icon={<GraduationCap size={23} />}
+                    tone="orange"
+                  />
+                  <StatCard
+                    label="已保存课程反馈"
+                    value={moduleFeedback.length}
+                    suffix="次课程"
+                    icon={<MessageSquareText size={22} />}
+                    tone="purple"
+                  />
+                </div>
+              )}
+              {group && activePanel === "feedback" ? (
+                listedStudents.length ? (
+                  <FeedbackWorkspace
+                    key={`class-${group.id}`}
+                    module={group.module}
+                    students={listedStudents}
+                    studentId={null}
+                    classId={group.id}
+                    className={group.name}
+                    sessions={scopedFeedback}
+                    onSave={saveFeedback}
+                    onDirtyChange={markFeedbackDirty}
+                  />
+                ) : (
+                  <section className="content-card">
+                    <EmptyState
+                      icon={<Users size={32} />}
+                      title="先添加学生，再填写班级反馈"
+                      text="从 Excel 粘贴全班名单，之后就能在同一页面逐个填写反馈。"
+                      action={
+                        <div className="button-row">
+                          <button
+                            className="button button-primary"
+                            onClick={() => setModal({ kind: "import" })}
+                          >
+                            <ArrowUpFromLine size={16} />
+                            批量录入学生
+                          </button>
+                          <button
+                            className="button button-secondary"
+                            onClick={() => setModal({ kind: "student" })}
+                          >
+                            <Plus size={16} />
+                            添加学生
+                          </button>
+                        </div>
+                      }
+                    />
+                  </section>
+                )
+              ) : showStudentList ? (
                 studentTable()
               ) : (
                 <section className="class-section">
@@ -1175,7 +1383,7 @@ export default function App() {
                         我的班级{" "}
                         <span className="count-pill">{classes.length}</span>
                       </h2>
-                      <p>选择一个班级，查看和管理学生。</p>
+                      <p>选择班级，集中填写本次课程的学生反馈。</p>
                     </div>
                     <label className="search-input class-search">
                       <Search size={17} />
@@ -1230,7 +1438,7 @@ export default function App() {
                               </span>
                               <span>{members.length} 位学生</span>
                               <span className="class-enter">
-                                进入班级 <ArrowRight size={14} />
+                                填写反馈 <ArrowRight size={14} />
                               </span>
                             </div>
                           </button>
@@ -1468,6 +1676,9 @@ export default function App() {
             <span>
               <strong>{data.records.length}</strong>条教学记录
             </span>
+            <span>
+              <strong>{feedbackSessions.length}</strong>次课程反馈
+            </span>
           </div>
           <button className="backup-option" onClick={exportBackup}>
             <span className="stat-icon tone-green">
@@ -1475,7 +1686,7 @@ export default function App() {
             </span>
             <span>
               <strong>导出完整备份</strong>
-              <small>保存所有模块、学生资料和教学记录为 JSON 文件</small>
+              <small>保存学生资料、课程反馈和教学记录为 JSON 文件</small>
             </span>
             <ChevronRight size={18} />
           </button>
@@ -1501,7 +1712,7 @@ export default function App() {
                 setConfirmation({
                   title: "清空全部数据？",
                   message:
-                    "这会删除三个模块的全部班级、学生和教学记录，无法撤销。请确认已保存需要的备份。",
+                    "这会删除三个模块的全部班级、学生、课程反馈和教学记录，无法撤销。请确认已保存需要的备份。",
                   label: "清空全部数据",
                   danger: true,
                   action: () => {
@@ -1517,6 +1728,7 @@ export default function App() {
                       )
                     ) {
                       setConfirmation(null);
+                      feedbackDirty.current = false;
                       navigate({ module: "one-to-one" });
                     }
                   },
@@ -1543,6 +1755,31 @@ export default function App() {
               onClick={confirmation.action}
             >
               {confirmation.label || "确认"}
+            </button>
+          </div>
+        </Modal>
+      )}
+      {manualCopy !== null && (
+        <Modal
+          title="手动复制反馈"
+          subtitle="浏览器暂时无法自动复制，请选中以下内容后复制。"
+          onClose={() => setManualCopy(null)}
+        >
+          <label className="field">
+            反馈内容
+            <textarea
+              readOnly
+              rows={10}
+              value={manualCopy}
+              onFocus={(event) => event.currentTarget.select()}
+            />
+          </label>
+          <div className="form-actions">
+            <button
+              className="button button-primary"
+              onClick={() => setManualCopy(null)}
+            >
+              完成
             </button>
           </div>
         </Modal>

@@ -5,11 +5,17 @@ import {
   loadData,
   parseBackup,
   parseStudentImport,
+  pruneFeedbackForStudent,
   saveData,
   STORAGE_KEY,
   validateStudent,
 } from "./data";
-import { EMPTY_STUDENT, type AppData, type Student } from "./types";
+import {
+  EMPTY_STUDENT,
+  type AppData,
+  type FeedbackSession,
+  type Student,
+} from "./types";
 
 const now = "2026-10-21T08:00:00.000Z";
 const student: Student = {
@@ -30,6 +36,107 @@ const minimal: AppData = {
   records: [],
 };
 const decode = (data: unknown) => parseBackup(JSON.stringify(data));
+
+function feedbackFixture(): AppData & { feedbackSessions: FeedbackSession[] } {
+  return {
+    ...minimal,
+    classes: [
+      {
+        id: "evening-class",
+        module: "evening",
+        name: "晚辅班",
+        grade: "七年级",
+        schedule: "",
+        notes: "",
+        createdAt: now,
+      },
+      {
+        id: "other-evening-class",
+        module: "evening",
+        name: "另一晚辅班",
+        grade: "七年级",
+        schedule: "",
+        notes: "",
+        createdAt: now,
+      },
+      {
+        id: "course-class",
+        module: "course",
+        name: "数学班",
+        grade: "七年级",
+        schedule: "",
+        notes: "",
+        createdAt: now,
+      },
+    ],
+    students: [
+      student,
+      {
+        ...student,
+        id: "evening-student-1",
+        module: "evening",
+        classId: "evening-class",
+      },
+      {
+        ...student,
+        id: "evening-student-2",
+        module: "evening",
+        classId: "evening-class",
+      },
+      {
+        ...student,
+        id: "other-evening-student",
+        module: "evening",
+        classId: "other-evening-class",
+      },
+      {
+        ...student,
+        id: "course-student",
+        module: "course",
+        classId: "course-class",
+      },
+    ],
+    feedbackSessions: [
+      {
+        id: "individual-feedback",
+        module: "one-to-one",
+        classId: null,
+        studentId: student.id,
+        lessonAt: "2026-10-21T16:30",
+        entries: [
+          { studentId: student.id, content: "计算过程清晰，继续关注符号。" },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "evening-feedback",
+        module: "evening",
+        classId: "evening-class",
+        studentId: null,
+        lessonAt: "2026-10-21T18:30",
+        entries: [
+          { studentId: "evening-student-1", content: "作业已订正。" },
+          { studentId: "evening-student-2", content: "" },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "course-feedback",
+        module: "course",
+        classId: "course-class",
+        studentId: null,
+        lessonAt: "2026-10-21T09:00",
+        entries: [
+          { studentId: "course-student", content: "能独立解答本节例题。" },
+        ],
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+  };
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -269,6 +376,236 @@ describe("backup integrity", () => {
   });
 });
 
+describe("course feedback backups", () => {
+  it("keeps legacy schema-v1 backups unchanged and preserves a supplied empty feedback list", () => {
+    expect(decode(minimal)).toEqual(minimal);
+    expect(Object.hasOwn(decode(minimal), "feedbackSessions")).toBe(false);
+    const withEmptyFeedback = { ...minimal, feedbackSessions: [] };
+    expect(decode(withEmptyFeedback)).toEqual(withEmptyFeedback);
+  });
+
+  it("round-trips individual, evening and course feedback including partially completed drafts", () => {
+    const data = feedbackFixture();
+    expect(decode(data)).toEqual(data);
+    data.feedbackSessions[1].entries[1].content = " \n ";
+    expect(decode(data)).toEqual(data);
+  });
+
+  it.each([
+    "2026-02-30T16:30",
+    "2026-10-21T24:00",
+    "2026-10-21T16:60",
+    "2026-10-21 16:30",
+    "2026-10-21T16:30:00",
+    null,
+  ])("rejects an invalid local lesson time: %s", (lessonAt) => {
+    const data = feedbackFixture();
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [{ ...data.feedbackSessions[0], lessonAt }],
+      }),
+    ).toThrow("上课时间");
+  });
+
+  it("accepts a leap-day lesson time", () => {
+    const data = feedbackFixture();
+    data.feedbackSessions[0].lessonAt = "2028-02-29T00:00";
+    expect(decode(data)).toEqual(data);
+  });
+
+  it("rejects wrong feedback target types and cross-module classes", () => {
+    const data = feedbackFixture();
+    const individual = data.feedbackSessions[0];
+    const group = data.feedbackSessions[1];
+    for (const malformed of [
+      { ...individual, classId: "evening-class" },
+      { ...individual, studentId: "missing" },
+      { ...individual, studentId: "evening-student-1" },
+      { ...group, studentId: "evening-student-1" },
+      { ...group, classId: "course-class" },
+      { ...group, classId: null },
+      { ...group, module: "constructor" },
+    ]) {
+      expect(() =>
+        decode({ ...data, feedbackSessions: [malformed] }),
+      ).toThrow();
+    }
+  });
+
+  it("requires exactly the target student's entry for one-to-one feedback", () => {
+    const data = feedbackFixture();
+    const individual = data.feedbackSessions[0];
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [{ ...individual, entries: [] }],
+      }),
+    ).toThrow("一条反馈");
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [
+          {
+            ...individual,
+            entries: [{ studentId: "evening-student-1", content: "内容" }],
+          },
+        ],
+      }),
+    ).toThrow("不一致");
+  });
+
+  it("rejects entries from another class in the same module, another module and nonexistent students", () => {
+    const data = feedbackFixture();
+    for (const studentId of [
+      "other-evening-student",
+      "course-student",
+      "missing",
+    ]) {
+      expect(() =>
+        decode({
+          ...data,
+          feedbackSessions: [
+            {
+              ...data.feedbackSessions[1],
+              entries: [{ studentId, content: "内容" }],
+            },
+          ],
+        }),
+      ).toThrow("不一致");
+    }
+  });
+
+  it("rejects repeated students, empty sessions and invalid content", () => {
+    const data = feedbackFixture();
+    const group = data.feedbackSessions[1];
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [
+          { ...group, entries: [group.entries[0], group.entries[0]] },
+        ],
+      }),
+    ).toThrow("重复学生");
+    for (const entries of [
+      [],
+      [{ studentId: "evening-student-1", content: " \n " }],
+    ]) {
+      expect(() =>
+        decode({
+          ...data,
+          feedbackSessions: [{ ...group, entries }],
+        }),
+      ).toThrow("非空反馈");
+    }
+    for (const content of [null, {}, "字".repeat(10_001)]) {
+      expect(() =>
+        decode({
+          ...data,
+          feedbackSessions: [
+            {
+              ...group,
+              entries: [{ studentId: "evening-student-1", content }],
+            },
+          ],
+        }),
+      ).toThrow("反馈内容");
+    }
+  });
+
+  it("validates global feedback ids and rejects malformed collection or entry shapes", () => {
+    const data = feedbackFixture();
+    const group = data.feedbackSessions[1];
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [{ ...group, id: student.id }],
+      }),
+    ).toThrow("重复 ID");
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [group, group],
+      }),
+    ).toThrow("重复 ID");
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [{ ...group, id: "\ud800" }],
+      }),
+    ).toThrow("无效 Unicode");
+    for (const feedbackSessions of [
+      null,
+      {},
+      [null],
+      [{ ...group, entries: {} }],
+      [{ ...group, entries: [null] }],
+    ]) {
+      expect(() => decode({ ...data, feedbackSessions })).toThrow();
+    }
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [{ ...group, updatedAt: "not-a-date" }],
+      }),
+    ).toThrow("更新时间");
+  });
+
+  it("bounds the number of sessions and entries", () => {
+    const data = feedbackFixture();
+    const group = data.feedbackSessions[1];
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: Array(20_001).fill(null),
+      }),
+    ).toThrow("20000");
+    expect(() =>
+      decode({
+        ...data,
+        feedbackSessions: [{ ...group, entries: Array(50_001).fill(null) }],
+      }),
+    ).toThrow("50000");
+  });
+});
+
+describe("feedback cleanup when deleting a student", () => {
+  it("removes the student's one-to-one sessions and preserves unrelated feedback", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    const result = pruneFeedbackForStudent(sessions, student.id);
+    expect(result).toEqual(sessions.slice(1));
+    expect(sessions).toHaveLength(3);
+    expect(result[0]).toBe(sessions[1]);
+  });
+
+  it("removes only the matching class entry and preserves other students' exact content", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    sessions[1].entries[1].content = " 需要保留的反馈\n第二行 ";
+    const result = pruneFeedbackForStudent(sessions, "evening-student-1");
+    expect(result).toHaveLength(3);
+    expect(result[1].entries).toEqual([
+      { studentId: "evening-student-2", content: " 需要保留的反馈\n第二行 " },
+    ]);
+    expect(sessions[1].entries).toHaveLength(2);
+  });
+
+  it("drops a class session when deleting its last nonblank feedback", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    const result = pruneFeedbackForStudent(sessions, "evening-student-1");
+    expect(result.map((session) => session.id)).toEqual([
+      "individual-feedback",
+      "course-feedback",
+    ]);
+  });
+
+  it("can remove a blank entry while retaining the completed feedback", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    const result = pruneFeedbackForStudent(sessions, "evening-student-2");
+    expect(result[1].entries).toEqual([sessions[1].entries[0]]);
+    expect(result[1].entries[0].content).toBe("作业已订正。");
+  });
+});
+
 describe("local persistence", () => {
   function mockStorage(initial: string | null = null) {
     let saved = initial;
@@ -291,6 +628,13 @@ describe("local persistence", () => {
       JSON.stringify(minimal),
     );
     expect(loadData()).toEqual({ data: minimal, error: null });
+  });
+
+  it("persists feedback sessions through a reload", () => {
+    mockStorage();
+    const data = feedbackFixture();
+    saveData(data);
+    expect(loadData()).toEqual({ data, error: null });
   });
 
   it("preserves invalid stored data and returns a blocking error", () => {

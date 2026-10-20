@@ -2,6 +2,7 @@ import {
   EMPTY_STUDENT,
   type AppData,
   type ClassGroup,
+  type FeedbackSession,
   type ImportRow,
   type Student,
   type StudentFields,
@@ -313,6 +314,14 @@ function timestamp(value: unknown, label: string): string {
   return date;
 }
 
+function localDateTime(value: unknown, label: string): string {
+  const date = string(value, label, 16, true);
+  if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/.test(date))
+    throw new Error(`${label}应为有效的 YYYY-MM-DDTHH:mm 格式`);
+  calendarDate(date.slice(0, 10), label);
+  return date;
+}
+
 function array(value: unknown, label: string, max: number): unknown[] {
   if (!Array.isArray(value) || value.length > max)
     throw new Error(`${label}必须是列表，且不能超过 ${max} 条`);
@@ -415,7 +424,102 @@ export function parseBackup(text: string): AppData {
       createdAt: timestamp(row.createdAt, "教学记录创建时间"),
     };
   });
-  return { schemaVersion: 1, students, classes, records };
+  const result: AppData = { schemaVersion: 1, students, classes, records };
+  // Keep the original schema-v1 shape when restoring a pre-feedback backup.
+  if (Object.hasOwn(source, "feedbackSessions")) {
+    const studentMap = new Map(
+      students.map((student) => [student.id, student]),
+    );
+    result.feedbackSessions = array(
+      source.feedbackSessions,
+      "课程反馈",
+      20_000,
+    ).map((value): FeedbackSession => {
+      const row = object(value, "课程反馈");
+      if (
+        row.module !== "one-to-one" &&
+        row.module !== "evening" &&
+        row.module !== "course"
+      )
+        throw new Error("课程反馈所属模块无效");
+      let classId: string | null = null;
+      let studentId: string | null = null;
+      if (row.module === "one-to-one") {
+        if (row.classId !== null) throw new Error("一对一课程反馈不能属于班级");
+        studentId = string(row.studentId, "课程反馈所属学生", 128, true);
+        const target = studentMap.get(studentId);
+        if (!target || target.module !== "one-to-one")
+          throw new Error("课程反馈所属一对一学生不存在");
+      } else {
+        if (row.studentId !== null)
+          throw new Error("班级课程反馈不能指定单独的目标学生");
+        classId = string(row.classId, "课程反馈所属班级", 128, true);
+        const target = classMap.get(classId);
+        if (!target || target.module !== row.module)
+          throw new Error("课程反馈所属班级不存在，或与反馈模块不一致");
+      }
+      const entryIds = new Set<string>();
+      const entries = array(row.entries, "学生反馈", 50_000).map((value) => {
+        const entry = object(value, "学生反馈");
+        const entryStudentId = string(
+          entry.studentId,
+          "学生反馈所属学生",
+          128,
+          true,
+        );
+        if (entryIds.has(entryStudentId))
+          throw new Error("同一次课程反馈中存在重复学生");
+        entryIds.add(entryStudentId);
+        const target = studentMap.get(entryStudentId);
+        if (
+          !target ||
+          target.module !== row.module ||
+          (row.module === "one-to-one"
+            ? entryStudentId !== studentId
+            : target.classId !== classId)
+        )
+          throw new Error("学生反馈与课程反馈的目标学生或班级不一致");
+        return {
+          studentId: entryStudentId,
+          content: string(entry.content, "学生反馈内容", 10_000),
+        };
+      });
+      if (row.module === "one-to-one" && entries.length !== 1)
+        throw new Error("一对一课程反馈必须包含目标学生的一条反馈");
+      if (!entries.some((entry) => entry.content.trim()))
+        throw new Error("课程反馈至少需要一位学生的非空反馈内容");
+      return {
+        id: id(row.id, "课程反馈 ID"),
+        module: row.module,
+        classId,
+        studentId,
+        lessonAt: localDateTime(row.lessonAt, "上课时间"),
+        entries,
+        createdAt: timestamp(row.createdAt, "课程反馈创建时间"),
+        updatedAt: timestamp(row.updatedAt, "课程反馈更新时间"),
+      };
+    });
+  }
+  return result;
+}
+
+export function pruneFeedbackForStudent(
+  sessions: FeedbackSession[],
+  studentId: string,
+): FeedbackSession[] {
+  return sessions.flatMap((session) => {
+    if (session.module === "one-to-one" && session.studentId === studentId)
+      return [];
+    const entries = session.entries.filter(
+      (entry) => entry.studentId !== studentId,
+    );
+    if (!entries.some((entry) => entry.content.trim())) return [];
+    return [
+      entries.length === session.entries.length
+        ? session
+        : { ...session, entries },
+    ];
+  });
 }
 
 export function loadData(): { data: AppData; error: string | null } {
