@@ -11,6 +11,12 @@ coverage/
 playwright-report/
 test-results/
 .local/
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.sqlite3-*
+.pytest_cache/
 backups/
 nookmi-backup-*.json
 *学生名单*

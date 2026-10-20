@@ -1,25 +1,52 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
-  CalendarDays,
   Check,
   CheckCheck,
+  ChevronRight,
   Clock3,
   Copy,
   FileText,
+  LoaderCircle,
   Plus,
   Save,
+  Settings2,
+  Sparkles,
+  Square,
+  WandSparkles,
 } from "lucide-react";
+import { ApiError, generateFeedback } from "./api";
 import { Modal } from "./components";
 import { newId } from "./data";
 import {
   copyFeedbackText,
   currentLocalLessonAt,
   formatClassFeedback,
-  formatLessonAt,
+  formatFeedbackPeriod,
   formatStudentFeedback,
   isValidLessonAt,
 } from "./feedback";
-import type { FeedbackSession, ModuleId, Student } from "./types";
+import {
+  canApplyGeneration,
+  defaultBrief,
+  emptyObservations,
+  entryIsStale,
+  feedbackSnapshot,
+  generationSignature,
+  hasFeedbackContent,
+  hasObservations,
+  hasPersonalFacts,
+  normalizeObservations,
+  outlineFeedback,
+  sortFeedbackByRecentEdit,
+} from "./feedbackModel";
+import type {
+  FeedbackBrief,
+  FeedbackEntry,
+  FeedbackSession,
+  ModuleId,
+  Student,
+  StudentObservations,
+} from "./types";
 import "./feedback.css";
 
 interface FeedbackWorkspaceProps {
@@ -29,40 +56,125 @@ interface FeedbackWorkspaceProps {
   studentId: string | null;
   className?: string;
   sessions: FeedbackSession[];
-  onSave: (session: FeedbackSession) => boolean;
+  onSave: (session: FeedbackSession) => Promise<boolean>;
   onDirtyChange?: (dirty: boolean) => void;
+  onConfigureAI?: () => void;
   readonly?: boolean;
 }
-
-interface Draft {
-  id: string | null;
-  lessonAt: string;
-  values: Record<string, string>;
-  createdAt: string | null;
+type Notice = { text: string; error?: boolean } | null;
+type Revision = { epoch: number; context: number; entry: number };
+type Proposal = {
+  student: Student;
+  content: string;
+  source: "ai" | "outline";
+  signature: string;
+  revision: Revision;
+};
+type Confirmation = {
+  title: string;
+  message: string;
+  label: string;
+  action: () => void;
+} | null;
+type Progress = {
+  total: number;
+  completed: number;
+  success: number;
+  failed: number;
+  skipped: number;
+  name: string;
+};
+const OBSERVATION_FIELDS: {
+  key: Exclude<keyof StudentObservations, "subjects">;
+  label: string;
+  placeholder: string;
+}[] = [
+  {
+    key: "performance",
+    label: "本次情况",
+    placeholder: "完成了什么、参与情况如何？短句即可。",
+  },
+  {
+    key: "strengths",
+    label: "值得肯定",
+    placeholder: "你实际观察到的进步或做得好的地方",
+  },
+  {
+    key: "difficulties",
+    label: "需要关注",
+    placeholder: "具体卡在哪里、有什么反复出现的问题",
+  },
+  {
+    key: "plan",
+    label: "下一步建议",
+    placeholder: "你希望继续练习或请家长配合什么（选填）",
+  },
+];
+function entryFor(session: FeedbackSession, id: string): FeedbackEntry {
+  return (
+    session.entries.find((entry) => entry.studentId === id) ?? {
+      studentId: id,
+      content: "",
+      observations: emptyObservations(),
+      reviewed: false,
+      generationSource: "manual",
+    }
+  );
 }
-
-function studentValue(draft: Draft, id: string): string {
-  return Object.hasOwn(draft.values, id) ? draft.values[id] : "";
+function sourceSignature(session: FeedbackSession, student: Student) {
+  return generationSignature(
+    session.module,
+    session.brief!,
+    normalizeObservations(entryFor(session, student.id).observations),
+    student.grade,
+    session.lessonAt,
+  );
 }
-
-function sessionDraft(session?: FeedbackSession): Draft {
-  return session
-    ? {
-        id: session.id,
-        lessonAt: session.lessonAt,
-        values: Object.fromEntries(
-          session.entries.map((entry) => [entry.studentId, entry.content]),
-        ),
-        createdAt: session.createdAt,
-      }
-    : {
-        id: null,
-        lessonAt: currentLocalLessonAt(),
-        values: {},
-        createdAt: null,
+function makeDraft(
+  module: ModuleId,
+  students: Student[],
+  classId: string | null,
+  studentId: string | null,
+  saved?: FeedbackSession,
+): FeedbackSession {
+  const now = new Date().toISOString();
+  const brief = saved?.brief
+    ? structuredClone(saved.brief)
+    : defaultBrief(
+        module,
+        students.map((student) => student.grade),
+        saved ? new Date(saved.lessonAt) : new Date(),
+      );
+  return {
+    ...(saved ?? {
+      id: newId(),
+      module,
+      classId,
+      studentId,
+      lessonAt:
+        module === "one-to-one"
+          ? currentLocalLessonAt()
+          : `${brief.periodStart}T00:00`,
+      createdAt: now,
+      updatedAt: now,
+    }),
+    brief,
+    entries: students.map((student) => {
+      const prior = saved?.entries.find(
+        (entry) => entry.studentId === student.id,
+      );
+      return {
+        ...(prior ?? {
+          studentId: student.id,
+          content: "",
+          reviewed: false,
+          generationSource: "manual" as const,
+        }),
+        observations: normalizeObservations(prior?.observations),
       };
+    }),
+  };
 }
-
 export default function FeedbackWorkspace({
   module,
   students,
@@ -72,402 +184,1330 @@ export default function FeedbackWorkspace({
   sessions,
   onSave,
   onDirtyChange,
+  onConfigureAI,
   readonly = false,
 }: FeedbackWorkspaceProps) {
   const orderedSessions = useMemo(
-    () =>
-      [...sessions].sort(
-        (a, b) =>
-          b.lessonAt.localeCompare(a.lessonAt) ||
-          b.updatedAt.localeCompare(a.updatedAt),
-      ),
+    () => sortFeedbackByRecentEdit(sessions),
     [sessions],
   );
-  const [draft, setDraft] = useState(() => sessionDraft(orderedSessions[0]));
-  const [baseline, setBaseline] = useState(draft);
-  const [status, setStatus] = useState<{
-    text: string;
-    error?: boolean;
-  } | null>(null);
-  const [pendingSession, setPendingSession] = useState<{
-    session?: FeedbackSession;
-  } | null>(null);
+  const [draft, setDraft] = useState(() =>
+    makeDraft(module, students, classId, studentId, orderedSessions[0]),
+  );
+  const [baseline, setBaseline] = useState(() => feedbackSnapshot(draft));
+  const [selectedId, setSelectedId] = useState(students[0]?.id ?? "");
+  const [subjectText, setSubjectText] = useState(
+    draft.brief!.subjects.join("、"),
+  );
+  const [status, setStatus] = useState<Notice>(null);
+  const [confirmation, setConfirmation] = useState<Confirmation>(null);
+  const [proposal, setProposal] = useState<Proposal | null>(null);
   const [copyFallback, setCopyFallback] = useState<{
     text: string;
     reason: string;
   } | null>(null);
-  const [historyLimit, setHistoryLimit] = useState(20);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [failures, setFailures] = useState(new Map<string, string>());
+  const [saving, setSaving] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [needsConfiguration, setNeedsConfiguration] = useState(false);
+  const [historyLimit, setHistoryLimit] = useState(20);
+  const draftRef = useRef(draft);
+  const studentsRef = useRef(students);
+  studentsRef.current = students;
+  const epoch = useRef(0);
+  const contextVersion = useRef(0);
+  const entryVersions = useRef(new Map<string, number>());
+  const generationId = useRef(0);
+  const controller = useRef<AbortController | null>(null);
   const loadedSignature = useRef(
     orderedSessions[0] ? JSON.stringify(orderedSessions[0]) : "",
   );
   const dirtyCallback = useRef(onDirtyChange);
   dirtyCallback.current = onDirtyChange;
+  const rosterSignature = useRef(
+    new Map(
+      students.map((student) => [
+        student.id,
+        `${student.name}\0${student.grade}`,
+      ]),
+    ),
+  );
   const fieldId = useId();
-  const dirty =
-    !readonly &&
-    (draft.lessonAt !== baseline.lessonAt ||
-      students.some(
-        (student) =>
-          studentValue(draft, student.id) !==
-          studentValue(baseline, student.id),
-      ));
+  const dirty = !readonly && feedbackSnapshot(draft) !== baseline;
+  const selected =
+    students.find((student) => student.id === selectedId) ?? students[0];
+  const selectedEntry = selected ? entryFor(draft, selected.id) : null;
+  const observations = normalizeObservations(selectedEntry?.observations);
   const filledCount = students.filter((student) =>
-    studentValue(draft, student.id).trim(),
+    entryFor(draft, student.id).content.trim(),
   ).length;
+  const reviewedCount = students.filter((student) => {
+    const entry = entryFor(draft, student.id);
+    return entry.content.trim() && entry.reviewed;
+  }).length;
+  const eligible = students.filter((student) => {
+    const entry = entryFor(draft, student.id);
+    return !entry.content.trim() && hasPersonalFacts(entry.observations);
+  });
+  const currentSignature = selected ? sourceSignature(draft, selected) : "";
+  const stale = Boolean(
+    selectedEntry &&
+      !selectedEntry.reviewed &&
+      entryIsStale(selectedEntry, currentSignature),
+  );
+  const periodName =
+    module === "one-to-one" ? "本次" : module === "evening" ? "本周" : "本月";
+  const title =
+    module === "one-to-one"
+      ? "课后反馈"
+      : module === "evening"
+        ? "晚辅周反馈"
+        : "班课月反馈";
+  const activeBrief = draft.brief!;
 
-  useEffect(() => {
-    dirtyCallback.current?.(dirty);
-  }, [dirty]);
-  useEffect(() => () => dirtyCallback.current?.(false), []);
-
-  function loadSession(session?: FeedbackSession) {
-    const next = sessionDraft(session);
+  function updateDraft(updater: (current: FeedbackSession) => FeedbackSession) {
+    const next = updater(draftRef.current);
+    draftRef.current = next;
     setDraft(next);
-    setBaseline(next);
-    loadedSignature.current = session ? JSON.stringify(session) : "";
-    setStatus(null);
-    setPendingSession(null);
   }
-
-  useEffect(() => {
-    if (dirty || !draft.id) return;
-    const latest = sessions.find((session) => session.id === draft.id);
-    const signature = latest ? JSON.stringify(latest) : "";
-    if (signature !== loadedSignature.current) {
-      loadSession(latest ?? orderedSessions[0]);
-    }
-  }, [sessions, orderedSessions, draft.id, dirty]);
-
-  function requestSession(session?: FeedbackSession) {
-    if (session?.id === draft.id) return;
-    if (dirty) setPendingSession({ session });
-    else loadSession(session);
-  }
-
-  function currentSession(): FeedbackSession {
-    const now = new Date().toISOString();
+  function revision(id: string): Revision {
     return {
-      id: draft.id ?? newId(),
-      module,
-      classId,
-      studentId,
-      lessonAt: draft.lessonAt,
-      entries: students.map((student) => ({
-        studentId: student.id,
-        content: studentValue(draft, student.id).trim(),
-      })),
-      createdAt: draft.createdAt ?? now,
-      updatedAt: now,
+      epoch: epoch.current,
+      context: contextVersion.current,
+      entry: entryVersions.current.get(id) ?? 0,
     };
   }
-
-  function validTime() {
-    if (isValidLessonAt(draft.lessonAt)) return true;
-    setStatus({
-      text: "请填写有效的上课日期和时间（1900—2100 年）。",
-      error: true,
-    });
-    return false;
+  function cancelGeneration(
+    message = "已取消生成；已完成的草稿和当前输入均已保留。",
+  ) {
+    generationId.current++;
+    controller.current?.abort();
+    controller.current = null;
+    setProgress(null);
+    setStatus({ text: message });
   }
-
-  function save() {
-    if (readonly || !validTime() || !filledCount) return;
-    const session = currentSession();
-    if (session.entries.some((entry) => entry.content.length > 10000)) {
-      setStatus({ text: "每位学生的反馈不能超过 10000 字。", error: true });
-      return;
-    }
-    if (onSave(session)) {
-      const next = sessionDraft(session);
-      setDraft(next);
-      setBaseline(next);
-      loadedSignature.current = JSON.stringify(session);
-      setStatus({
-        text: `本次反馈已保存，已填写 ${filledCount} 位学生。`,
+  function changeEntry(
+    id: string,
+    updater: (entry: FeedbackEntry) => FeedbackEntry,
+    userEdit = true,
+  ) {
+    if (userEdit)
+      entryVersions.current.set(id, (entryVersions.current.get(id) ?? 0) + 1);
+    updateDraft((current) => {
+      const next = updater(entryFor(current, id));
+      const exists = current.entries.some((entry) => entry.studentId === id);
+      return {
+        ...current,
+        entries: exists
+          ? current.entries.map((entry) =>
+              entry.studentId === id ? next : entry,
+            )
+          : [...current.entries, next],
+      };
+    });
+    if (userEdit) setStatus(null);
+    setFailures((current) => {
+      const next = new Map(current);
+      next.delete(id);
+      return next;
+    });
+  }
+  function changeObservation(
+    key: Exclude<keyof StudentObservations, "subjects">,
+    value: string,
+  ) {
+    if (!selected) return;
+    changeEntry(selected.id, (entry) => ({
+      ...entry,
+      observations: {
+        ...normalizeObservations(entry.observations),
+        [key]: value,
+      },
+      reviewed: false,
+    }));
+  }
+  function changeBrief(change: Partial<FeedbackBrief>, lessonAt?: string) {
+    contextVersion.current++;
+    if (controller.current)
+      cancelGeneration(
+        "共用信息已修改，已停止当前生成。已有正文保留，请重新核对。",
+      );
+    else setStatus(null);
+    updateDraft((current) => ({
+      ...current,
+      lessonAt: lessonAt ?? current.lessonAt,
+      brief: { ...current.brief!, ...change },
+      entries: current.entries.map((entry) => ({ ...entry, reviewed: false })),
+    }));
+  }
+  function loadSession(session?: FeedbackSession) {
+    generationId.current++;
+    controller.current?.abort();
+    controller.current = null;
+    epoch.current++;
+    contextVersion.current = 0;
+    entryVersions.current.clear();
+    const next = makeDraft(
+      module,
+      studentsRef.current,
+      classId,
+      studentId,
+      session,
+    );
+    draftRef.current = next;
+    setDraft(next);
+    setBaseline(feedbackSnapshot(next));
+    setSubjectText(next.brief!.subjects.join("、"));
+    loadedSignature.current = session ? JSON.stringify(session) : "";
+    setStatus(null);
+    setProgress(null);
+    setFailures(new Map());
+    setProposal(null);
+    setConfirmation(null);
+    setSaving(false);
+  }
+  function requestSession(session?: FeedbackSession) {
+    if (session?.id === draft.id) return;
+    if (dirty || progress) {
+      setConfirmation({
+        title: "切换前处理当前反馈",
+        message:
+          "当前有未保存的修改或正在生成的内容。可以返回保存；继续切换会放弃未保存修改并停止生成。",
+        label: "放弃修改并切换",
+        action: () => loadSession(session),
       });
-    } else {
+    } else loadSession(session);
+  }
+  useEffect(() => {
+    dirtyCallback.current?.(dirty || Boolean(progress));
+  }, [dirty, progress]);
+  useEffect(
+    () => () => {
+      epoch.current++;
+      generationId.current++;
+      controller.current?.abort();
+      dirtyCallback.current?.(false);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (dirty || saving || progress) return;
+    const latest = sessions.find((session) => session.id === draft.id);
+    if (latest && JSON.stringify(latest) !== loadedSignature.current)
+      loadSession(latest);
+    else if (!latest && loadedSignature.current)
+      loadSession(orderedSessions[0]);
+  }, [sessions, orderedSessions, draft.id, dirty, saving, progress]);
+  useEffect(() => {
+    const changed = students.filter(
+      (student) =>
+        rosterSignature.current.has(student.id) &&
+        rosterSignature.current.get(student.id) !==
+          `${student.name}\0${student.grade}`,
+    );
+    rosterSignature.current = new Map(
+      students.map((student) => [
+        student.id,
+        `${student.name}\0${student.grade}`,
+      ]),
+    );
+    for (const student of changed)
+      changeEntry(student.id, (entry) => ({ ...entry, reviewed: false }));
+    if (!students.some((student) => student.id === selectedId))
+      setSelectedId(students[0]?.id ?? "");
+  }, [students, selectedId]);
+
+  function validateContext(): boolean {
+    const current = draftRef.current;
+    const brief = current.brief!;
+    if (
+      !isValidLessonAt(current.lessonAt) ||
+      !isValidLessonAt(`${brief.periodStart}T00:00`) ||
+      !isValidLessonAt(`${brief.periodEnd}T00:00`) ||
+      brief.periodEnd < brief.periodStart
+    ) {
       setStatus({
-        text: "反馈尚未保存，请按页面提示处理后重试。当前输入仍保留在这里。",
+        text: "请填写有效的时间，周期结束日期不能早于开始日期。",
         error: true,
       });
+      return false;
+    }
+    if (
+      brief.subjects.length > 10 ||
+      brief.subjects.some((subject) => subject.length > 50)
+    ) {
+      setStatus({
+        text: "最多填写 10 个科目，每个科目名称不超过 50 字。",
+        error: true,
+      });
+      return false;
+    }
+    if (
+      [brief.teachingContent, brief.commonTasks, brief.focus].some(
+        (value) => value.length > 5000,
+      )
+    ) {
+      setStatus({ text: "每项共用内容不能超过 5000 字。", error: true });
+      return false;
+    }
+    for (const entry of current.entries) {
+      const notes = normalizeObservations(entry.observations);
+      if (
+        Object.keys(notes.subjects).length > 10 ||
+        Object.keys(notes.subjects).some(
+          (subject) => !subject.trim() || subject.length > 50,
+        ) ||
+        [
+          notes.performance,
+          notes.strengths,
+          notes.difficulties,
+          notes.plan,
+          notes.tasks,
+          ...Object.values(notes.subjects),
+        ].some((value) => value.length > 2000) ||
+        entry.content.length > 10000
+      ) {
+        setStatus({
+          text: "每位学生最多记录 10 个科目，每条个人记录不超过 2000 字，反馈正文不超过 10000 字。请检查并精简后重试。",
+          error: true,
+        });
+        return false;
+      }
+    }
+    return true;
+  }
+  function snapshotForSave(): FeedbackSession {
+    return {
+      ...draftRef.current,
+      entries: studentsRef.current.map((student) =>
+        entryFor(draftRef.current, student.id),
+      ),
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  async function save() {
+    if (readonly || saving || !validateContext()) return;
+    const saved = snapshotForSave();
+    if (!hasFeedbackContent(saved)) {
+      setStatus({
+        text: "先填写一点共用内容、学生记录或反馈正文，再保存草稿。",
+        error: true,
+      });
+      return;
+    }
+    const atEpoch = epoch.current;
+    const submitted = feedbackSnapshot(saved);
+    setSaving(true);
+    try {
+      const ok = await onSave(saved);
+      if (atEpoch !== epoch.current) return;
+      if (ok) {
+        loadedSignature.current = JSON.stringify(saved);
+        setBaseline(submitted);
+        updateDraft((current) => ({
+          ...current,
+          entries: studentsRef.current.map((student) =>
+            entryFor(current, student.id),
+          ),
+          updatedAt: saved.updatedAt,
+        }));
+        setStatus({
+          text:
+            feedbackSnapshot(draftRef.current) === submitted
+              ? "草稿已保存。可以随时回来补充、生成和核对。"
+              : "本次提交已保存；保存期间的新修改仍待保存。",
+        });
+      } else
+        setStatus({
+          text: "保存未完成，请按页面提示处理后重试。所有输入仍保留。",
+          error: true,
+        });
+    } catch (error) {
+      if (atEpoch === epoch.current)
+        setStatus({
+          text:
+            error instanceof Error
+              ? error.message
+              : "保存失败，当前输入已保留。",
+          error: true,
+        });
+    } finally {
+      if (atEpoch === epoch.current) setSaving(false);
     }
   }
-
+  function acceptGenerated(
+    student: Student,
+    content: string,
+    source: "ai" | "outline",
+    signature: string,
+  ) {
+    changeEntry(student.id, (entry) => ({
+      ...entry,
+      content,
+      reviewed: false,
+      generationSource: source,
+      generatedFrom: signature,
+    }));
+  }
+  function organize(student: Student) {
+    if (!validateContext()) return;
+    const current = draftRef.current;
+    const entry = entryFor(current, student.id);
+    if (!hasObservations(entry.observations)) {
+      setStatus({
+        text: "请先写下这位学生的真实记录或个人安排，再整理草稿。",
+        error: true,
+      });
+      return;
+    }
+    const content = outlineFeedback(
+      module,
+      current.brief!,
+      normalizeObservations(entry.observations),
+    );
+    if (content.length > 10000) {
+      setStatus({
+        text: "原始记录合计超过 10000 字，请先精简记录再整理。",
+        error: true,
+      });
+      return;
+    }
+    const signature = sourceSignature(current, student);
+    if (entry.content.trim())
+      setProposal({
+        student,
+        content,
+        source: "outline",
+        signature,
+        revision: revision(student.id),
+      });
+    else {
+      acceptGenerated(student, content, "outline", signature);
+      setStatus({
+        text: "已按原始记录整理草稿，没有调用 AI，也没有补充未记录的事实。请检查后再复制。",
+      });
+    }
+  }
+  async function runGeneration(targets: Student[], single = false) {
+    if (readonly || controller.current || !validateContext()) return;
+    if (!targets.length) {
+      setStatus({
+        text: "先补充学生的实际表现、亮点、困难或分科情况；仅有建议与任务不足以生成反馈。",
+        error: true,
+      });
+      return;
+    }
+    const job = ++generationId.current;
+    const abortController = new AbortController();
+    controller.current = abortController;
+    const summary: Progress = {
+      total: targets.length,
+      completed: 0,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      name: "",
+    };
+    setProgress({ ...summary });
+    setNeedsConfiguration(false);
+    setStatus(null);
+    for (const target of targets) {
+      if (job !== generationId.current || abortController.signal.aborted)
+        return;
+      const student = studentsRef.current.find((item) => item.id === target.id);
+      const current = draftRef.current;
+      const entry = student ? entryFor(current, student.id) : null;
+      if (
+        !student ||
+        !entry ||
+        !hasPersonalFacts(entry.observations) ||
+        (!single && entry.content.trim())
+      ) {
+        summary.skipped++;
+        summary.completed++;
+        setProgress({ ...summary });
+        continue;
+      }
+      const started = revision(student.id);
+      const signature = sourceSignature(current, student);
+      summary.name = student.name;
+      setProgress({ ...summary });
+      try {
+        const result = await generateFeedback(
+          {
+            module,
+            brief: structuredClone(current.brief!),
+            observations: normalizeObservations(entry.observations),
+            grade: student.grade,
+          },
+          abortController.signal,
+        );
+        if (job !== generationId.current || abortController.signal.aborted)
+          return;
+        if (
+          typeof result.content !== "string" ||
+          !result.content.trim() ||
+          result.content.length > 10000
+        )
+          throw new Error("AI 返回内容为空或过长，请重试。");
+        if (
+          !studentsRef.current.some((item) => item.id === student.id) ||
+          !canApplyGeneration(started, revision(student.id))
+        ) {
+          summary.skipped++;
+          setFailures((prior) =>
+            new Map(prior).set(
+              student.id,
+              "生成期间记录已修改，返回结果未覆盖当前内容。可按最新记录重新生成。",
+            ),
+          );
+        } else if (entry.content.trim()) {
+          setProposal({
+            student,
+            content: result.content.trim(),
+            source: "ai",
+            signature,
+            revision: started,
+          });
+          summary.success++;
+        } else {
+          acceptGenerated(student, result.content.trim(), "ai", signature);
+          summary.success++;
+        }
+      } catch (error) {
+        if (job !== generationId.current || abortController.signal.aborted)
+          return;
+        summary.failed++;
+        const message =
+          error instanceof Error ? error.message : "生成失败，请稍后重试。";
+        setFailures((prior) => new Map(prior).set(student.id, message));
+        if (error instanceof ApiError && error.status === 503) {
+          setNeedsConfiguration(true);
+          summary.skipped += targets.length - summary.completed - 1;
+          summary.completed = targets.length;
+          setStatus({
+            text: "尚未配置可用的 AI 服务。可以先保存记录或按原始记录整理草稿，再打开 AI 设置。",
+            error: true,
+          });
+          break;
+        }
+      }
+      summary.completed++;
+      setProgress({ ...summary });
+    }
+    if (job === generationId.current) {
+      controller.current = null;
+      setProgress(null);
+      setStatus(
+        (previous) =>
+          previous ?? {
+            text: `生成完成：${summary.success} 位成功，${summary.failed} 位失败，${summary.skipped} 位跳过。请逐一核对后复制。`,
+            error: summary.failed > 0,
+          },
+      );
+    }
+  }
+  function requestGenerate(student: Student) {
+    const entry = entryFor(draftRef.current, student.id);
+    if (!hasPersonalFacts(entry.observations)) {
+      setStatus({
+        text: "请先记录这位学生的实际表现、亮点、困难或分科情况。建议和任务可以补充，但不会被当成已发生的事实。",
+        error: true,
+      });
+      return;
+    }
+    if (entry.content.trim()) {
+      setConfirmation({
+        title: "基于当前记录生成新候选？",
+        message:
+          "现有正文会保留。生成完成后可以比较，再决定是否替换；不会直接覆盖你已写的反馈。",
+        label: "生成候选草稿",
+        action: () => {
+          setConfirmation(null);
+          void runGeneration([student], true);
+        },
+      });
+    } else void runGeneration([student], true);
+  }
   async function copy(student?: Student) {
-    if (!validTime()) return;
-    const session = currentSession();
+    if (!validateContext()) return;
+    const current = snapshotForSave();
+    current.entries = current.entries.filter(
+      (entry) => entry.reviewed && entry.content.trim(),
+    );
     const text = student
-      ? formatStudentFeedback(session, student, className)
-      : formatClassFeedback(session, students, className);
-    if (!text) return;
+      ? formatStudentFeedback(current, student, className)
+      : formatClassFeedback(current, studentsRef.current, className);
+    if (!text) {
+      setStatus({
+        text: "请先核对反馈正文，再勾选「已核对事实与措辞」。",
+        error: true,
+      });
+      return;
+    }
     setCopying(true);
     try {
       await copyFeedbackText(text);
       setStatus({
         text: student
-          ? `已复制 ${student.name} 的反馈。`
-          : `已复制 ${filledCount} 位学生的反馈，空白内容已跳过。`,
+          ? `已复制 ${student.name} 的反馈，可以粘贴发给对应家长。`
+          : `已复制 ${current.entries.length} 位已核对学生的反馈，其他草稿已跳过。`,
       });
     } catch (error) {
       setCopyFallback({
         text,
         reason:
-          error instanceof Error
-            ? error.message
-            : "自动复制失败，请手动选择并复制。",
+          error instanceof Error ? error.message : "自动复制失败，请手动复制。",
       });
     } finally {
       setCopying(false);
     }
   }
+  const proposalValid = proposal
+    ? canApplyGeneration(proposal.revision, revision(proposal.student.id)) &&
+      students.some((student) => student.id === proposal.student.id)
+    : false;
+  const subjectFields = [
+    ...new Set([
+      ...activeBrief.subjects,
+      ...Object.entries(observations.subjects)
+        .filter(([, value]) => value.trim())
+        .map(([subject]) => subject),
+    ]),
+  ];
 
   return (
-    <section className="fb-workspace" aria-label="课后反馈工作区">
+    <section className="fb-workspace" aria-label="反馈工作区">
       <div className="fb-heading">
         <div>
-          <span className="fb-eyebrow">AFTER CLASS</span>
-          <h2>课后反馈</h2>
-          <p>
-            {module === "one-to-one"
-              ? "写下本次上课反馈，复制后即可发给家长。"
-              : "填写上课时间，为每位学生写下这次的反馈。"}
-          </p>
+          <span className="fb-eyebrow">LESS WRITING · MORE TEACHING</span>
+          <h2>{title}</h2>
+          <p>共用内容写一次，个人情况记短句，生成后核对再复制。</p>
         </div>
-        {!readonly && (
-          <button
-            type="button"
-            className="button button-secondary"
-            onClick={() => requestSession()}
-          >
-            <Plus size={17} />
-            新建本次反馈
-          </button>
-        )}
+        <div className="fb-heading-actions">
+          {onConfigureAI && (
+            <button
+              type="button"
+              className="button button-ghost"
+              onClick={onConfigureAI}
+            >
+              <Settings2 size={16} />
+              AI 设置
+            </button>
+          )}
+          {!readonly && (
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => requestSession()}
+            >
+              <Plus size={16} />
+              新建{periodName}反馈
+            </button>
+          )}
+        </div>
       </div>
-      <div className="fb-layout">
-        <div className="fb-editor">
-          <div className="fb-session-bar">
-            <label className="field fb-time-field" htmlFor={`${fieldId}-time`}>
-              <span>
-                <CalendarDays size={16} />
-                上课时间
-              </span>
+      <section className="fb-common">
+        <div className="fb-section-title">
+          <h3>
+            <span>01</span>
+            {module === "one-to-one" ? "本次课程信息" : "共用信息，只写一次"}
+          </h3>
+          <span className={`fb-draft-badge ${dirty ? "fb-unsaved" : ""}`}>
+            {dirty
+              ? "有未保存修改"
+              : sessions.some((session) => session.id === draft.id)
+                ? "已保存草稿"
+                : "新草稿"}
+          </span>
+        </div>
+        <div className="fb-context-row">
+          {module === "one-to-one" ? (
+            <label className="field">
+              上课时间
               <input
-                id={`${fieldId}-time`}
                 type="datetime-local"
                 value={draft.lessonAt}
                 min="1900-01-01T00:00"
                 max="2100-12-31T23:59"
-                required
                 readOnly={readonly}
-                onChange={(event) => {
-                  setDraft((current) => ({
-                    ...current,
-                    lessonAt: event.target.value,
-                  }));
-                  setStatus(null);
-                }}
+                onChange={(event) =>
+                  changeBrief(
+                    {
+                      periodStart: event.target.value.slice(0, 10),
+                      periodEnd: event.target.value.slice(0, 10),
+                    },
+                    event.target.value,
+                  )
+                }
               />
             </label>
-            <div className="fb-progress" aria-live="polite">
-              <span className={`fb-draft-badge ${dirty ? "fb-unsaved" : ""}`}>
-                {dirty ? "有未保存修改" : draft.id ? "已保存记录" : "新反馈"}
-              </span>
-              <span>
-                <strong>{filledCount}</strong> / {students.length} 人已填写
-              </span>
-            </div>
-          </div>
-          {status && (
-            <div
-              className={`fb-status ${status.error ? "fb-status-error" : ""}`}
-              role={status.error ? "alert" : "status"}
-            >
-              {!status.error && <Check size={16} />}
-              {status.text}
+          ) : (
+            <div className="fb-date-range">
+              <label className="field">
+                周期开始
+                <input
+                  aria-label="周期开始"
+                  type="date"
+                  value={activeBrief.periodStart}
+                  min="1900-01-01"
+                  max="2100-12-31"
+                  readOnly={readonly}
+                  onChange={(event) =>
+                    changeBrief(
+                      { periodStart: event.target.value },
+                      `${event.target.value}T00:00`,
+                    )
+                  }
+                />
+              </label>
+              <span>—</span>
+              <label className="field">
+                周期结束
+                <input
+                  aria-label="周期结束"
+                  type="date"
+                  value={activeBrief.periodEnd}
+                  min="1900-01-01"
+                  max="2100-12-31"
+                  readOnly={readonly}
+                  onChange={(event) =>
+                    changeBrief({ periodEnd: event.target.value })
+                  }
+                />
+              </label>
             </div>
           )}
-          {students.length ? (
-            <div className="fb-students">
-              {students.map((student, index) => {
-                const value = studentValue(draft, student.id);
-                const filled = Boolean(value.trim());
+          <label className="field">
+            科目 <small>用顿号或逗号分隔，可修改</small>
+            <input
+              value={subjectText}
+              maxLength={1000}
+              readOnly={readonly}
+              placeholder="例如：数学、物理"
+              onChange={(event) => {
+                setSubjectText(event.target.value);
+                changeBrief({
+                  subjects: [
+                    ...new Set(
+                      event.target.value
+                        .split(/[,，、\n]/)
+                        .map((value) => value.trim())
+                        .filter(Boolean),
+                    ),
+                  ],
+                });
+              }}
+              onBlur={() => setSubjectText(activeBrief.subjects.join("、"))}
+            />
+          </label>
+          <label className="field fb-length">
+            反馈篇幅
+            <select
+              value={activeBrief.length}
+              disabled={readonly}
+              onChange={(event) =>
+                changeBrief({
+                  length: event.target.value as FeedbackBrief["length"],
+                })
+              }
+            >
+              <option value="brief">简短，抓住重点</option>
+              <option value="standard">适中，说明情况</option>
+            </select>
+          </label>
+        </div>
+        <div className="fb-common-fields">
+          <label className="field">
+            {periodName}教学 / 学习内容 <small>选填</small>
+            <textarea
+              rows={2}
+              value={activeBrief.teachingContent}
+              maxLength={5000}
+              readOnly={readonly}
+              placeholder={
+                module === "evening"
+                  ? "这一周主要辅导了哪些内容？如：分式运算、力的示意图。"
+                  : module === "course"
+                    ? "这个月全班学了哪些章节、完成了哪些学习任务？"
+                    : "今天讲了什么？如：一元二次方程的解法。"
+              }
+              onChange={(event) =>
+                changeBrief({ teachingContent: event.target.value })
+              }
+            />
+          </label>
+          <label className="field">
+            {module === "course" ? "全班安排 / 共性提醒" : "共同课后任务"}{" "}
+            <small>选填</small>
+            <textarea
+              rows={2}
+              value={activeBrief.commonTasks}
+              maxLength={5000}
+              readOnly={readonly}
+              placeholder={
+                module === "course"
+                  ? "有需要统一告知家长的安排再填写。"
+                  : "所有学生相同的安排只写一次；没有就留空。"
+              }
+              onChange={(event) =>
+                changeBrief({ commonTasks: event.target.value })
+              }
+            />
+          </label>
+        </div>
+        <details className="fb-optional">
+          <summary>
+            反馈表达重点 <span>选填，用来告诉 AI 这次重点说明什么</span>
+          </summary>
+          <label className="field">
+            <span className="sr-only">反馈表达重点</span>
+            <textarea
+              rows={2}
+              value={activeBrief.focus}
+              maxLength={5000}
+              readOnly={readonly}
+              placeholder="例如：重点说明计算习惯，不要堆砌表扬；建议表达具体一些。"
+              onChange={(event) => changeBrief({ focus: event.target.value })}
+            />
+          </label>
+        </details>
+      </section>
+      {status && (
+        <div
+          className={`fb-status ${status.error ? "fb-status-error" : ""}`}
+          role={status.error ? "alert" : "status"}
+        >
+          {!status.error && <Check size={16} />}
+          <span>{status.text}</span>
+          {needsConfiguration && onConfigureAI && (
+            <button
+              type="button"
+              className="button button-secondary button-sm"
+              onClick={onConfigureAI}
+            >
+              配置 AI
+            </button>
+          )}
+        </div>
+      )}
+      <div className="fb-work-heading">
+        <div>
+          <h3>
+            <span>02</span>记录个人情况，核对家长反馈
+          </h3>
+          <p>
+            {filledCount} 人已有正文 · {reviewedCount} 人已核对
+            {module === "evening"
+              ? " · 初二默认数物，初三默认数物化，科目可在上方调整"
+              : ""}
+          </p>
+        </div>
+        {module !== "one-to-one" && !readonly && (
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={Boolean(progress) || !eligible.length}
+            onClick={() => void runGeneration(eligible)}
+          >
+            <Sparkles size={16} />
+            生成未完成反馈{eligible.length ? `（${eligible.length}）` : ""}
+          </button>
+        )}
+      </div>
+      {progress && (
+        <div className="fb-generation-progress" role="status">
+          <LoaderCircle size={17} className="fb-spin" />
+          <span>
+            正在生成 {progress.name || "反馈"} · {progress.completed} /{" "}
+            {progress.total}，失败 {progress.failed} 位
+          </span>
+          <button
+            type="button"
+            className="button button-ghost button-sm"
+            onClick={() => cancelGeneration()}
+          >
+            <Square size={13} />
+            停止生成
+          </button>
+        </div>
+      )}
+      {!students.length ? (
+        <div className="fb-empty">
+          <FileText size={30} />
+          <h3>先记录共用内容，或添加班级学生</h3>
+          <p>学生加入后，就可以逐一补充真实情况并生成反馈。</p>
+        </div>
+      ) : (
+        <div
+          className={`fb-composer ${module === "one-to-one" ? "fb-one-student" : ""}`}
+        >
+          {module !== "one-to-one" && (
+            <nav className="fb-roster" aria-label="选择反馈学生">
+              <div className="fb-roster-heading">
+                学生名单 <span>{students.length} 人</span>
+              </div>
+              {students.map((student) => {
+                const entry = entryFor(draft, student.id);
+                const state = failures.has(student.id)
+                  ? "生成待重试"
+                  : entry.content.trim()
+                    ? entry.reviewed
+                      ? "已核对"
+                      : "待核对"
+                    : hasObservations(entry.observations)
+                      ? "已记录"
+                      : "待记录";
                 return (
-                  <article className="fb-student" key={student.id}>
-                    <div className="fb-student-heading">
-                      <div className="fb-student-identity">
-                        <span className="fb-student-number">
-                          {String(index + 1).padStart(2, "0")}
-                        </span>
-                        <div>
-                          <label htmlFor={`${fieldId}-${student.id}`}>
-                            {student.name}
-                          </label>
-                          <span>
-                            {[student.grade, student.school]
-                              .filter(Boolean)
-                              .join(" · ") || "学生反馈"}
-                          </span>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="button button-ghost button-sm"
-                        aria-label={`复制 ${student.name} 的反馈`}
-                        disabled={!filled || copying}
-                        onClick={() => void copy(student)}
-                      >
-                        <Copy size={15} />
-                        复制反馈
-                      </button>
-                    </div>
-                    <textarea
-                      id={`${fieldId}-${student.id}`}
-                      value={value}
-                      maxLength={10000}
-                      rows={module === "one-to-one" ? 9 : 5}
-                      readOnly={readonly}
-                      placeholder="自由填写这位学生本次上课的反馈…"
-                      onChange={(event) => {
-                        const content = event.target.value;
-                        setDraft((current) => ({
-                          ...current,
-                          values: { ...current.values, [student.id]: content },
-                        }));
-                        setStatus(null);
-                      }}
-                    />
-                    <div className="fb-student-footer">
-                      <span className={filled ? "fb-filled" : ""}>
-                        {filled ? (
-                          <>
-                            <CheckCheck size={14} />
-                            已填写
-                          </>
-                        ) : (
-                          "待填写"
-                        )}
-                      </span>
-                      <span>{value.length} / 10000</span>
-                    </div>
-                  </article>
+                  <button
+                    type="button"
+                    key={student.id}
+                    className={`fb-roster-item ${student.id === selected?.id ? "fb-roster-active" : ""}`}
+                    aria-current={
+                      student.id === selected?.id ? "true" : undefined
+                    }
+                    onClick={() => setSelectedId(student.id)}
+                  >
+                    <span>
+                      <strong>{student.name}</strong>
+                      <small>{student.grade || "未设置年级"}</small>
+                    </span>
+                    <span
+                      className={`fb-roster-state ${entry.reviewed ? "fb-reviewed" : ""}`}
+                    >
+                      {state}
+                    </span>
+                  </button>
                 );
               })}
-            </div>
-          ) : (
-            <div className="fb-empty">
-              <FileText size={30} />
-              <h3>先为班级添加学生</h3>
-              <p>学生名单建立后，就可以在这里逐一填写课后反馈。</p>
-            </div>
+            </nav>
           )}
-          <div className="fb-savebar">
-            <p>
-              {readonly
-                ? "复制反馈后，可粘贴发送给对应家长。"
-                : "可以先保存已填写的反馈，稍后继续补充。"}
-            </p>
-            <div>
-              {module !== "one-to-one" && (
+          {selected && selectedEntry && (
+            <>
+              <section className="fb-facts">
+                <div className="fb-panel-title">
+                  <div>
+                    <h3>
+                      {selected.name} <span>个人记录</span>
+                    </h3>
+                    <p>只写你实际了解的情况，不必组织成完整段落。</p>
+                  </div>
+                </div>
+                {!readonly && (
+                  <div className="fb-quick-notes">
+                    <span>快捷记录 · 点击代表已观察到</span>
+                    <div>
+                      {[
+                        { text: "能主动订正", key: "strengths" as const },
+                        { text: "作业按时完成", key: "performance" as const },
+                        { text: "审题需要提醒", key: "difficulties" as const },
+                        { text: "计算还需检查", key: "difficulties" as const },
+                      ].map((item) => (
+                        <button
+                          type="button"
+                          key={item.text}
+                          onClick={() => {
+                            const previous = observations[item.key];
+                            if (!previous.includes(item.text))
+                              changeObservation(
+                                item.key,
+                                `${previous.trim()}${previous.trim() ? "；" : ""}${item.text}`.slice(
+                                  0,
+                                  2000,
+                                ),
+                              );
+                          }}
+                        >
+                          <Plus size={11} />
+                          {item.text}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {OBSERVATION_FIELDS.map((item) => (
+                  <label className="field fb-observation" key={item.key}>
+                    {item.label}
+                    <textarea
+                      rows={item.key === "performance" ? 2 : 1}
+                      value={observations[item.key]}
+                      maxLength={2000}
+                      readOnly={readonly}
+                      placeholder={item.placeholder}
+                      onChange={(event) =>
+                        changeObservation(item.key, event.target.value)
+                      }
+                    />
+                  </label>
+                ))}
+                {module === "evening" && subjectFields.length > 0 && (
+                  <div className="fb-subject-notes">
+                    <h4>
+                      分科情况 <span>有观察再写，空白科目不编写评价</span>
+                    </h4>
+                    {subjectFields.map((subject) => (
+                      <label className="field" key={subject}>
+                        {subject}
+                        <textarea
+                          rows={1}
+                          value={
+                            Object.hasOwn(observations.subjects, subject)
+                              ? observations.subjects[subject]
+                              : ""
+                          }
+                          maxLength={2000}
+                          readOnly={readonly}
+                          placeholder={`记录${subject}的具体学习情况`}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            changeEntry(selected.id, (entry) => {
+                              const notes = normalizeObservations(
+                                entry.observations,
+                              );
+                              const nextSubjects = {
+                                ...notes.subjects,
+                                [subject]: value,
+                              };
+                              if (!value) delete nextSubjects[subject];
+                              return {
+                                ...entry,
+                                observations: {
+                                  ...notes,
+                                  subjects: nextSubjects,
+                                },
+                                reviewed: false,
+                              };
+                            });
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <details
+                  className="fb-optional"
+                  open={Boolean(observations.tasks)}
+                >
+                  <summary>
+                    个人任务 <span>仅这位学生的安排，选填</span>
+                  </summary>
+                  <label className="field">
+                    <span className="sr-only">个人任务</span>
+                    <textarea
+                      rows={2}
+                      value={observations.tasks}
+                      maxLength={2000}
+                      readOnly={readonly}
+                      placeholder="如需单独安排练习，在这里补充。"
+                      onChange={(event) =>
+                        changeObservation("tasks", event.target.value)
+                      }
+                    />
+                  </label>
+                </details>
+                {!hasPersonalFacts(observations) && (
+                  <p className="fb-field-note">
+                    填写一条实际表现、亮点、困难或分科情况后，即可生成。建议和任务不会被当作已发生的事实。
+                  </p>
+                )}
+                {!activeBrief.teachingContent.trim() &&
+                  hasPersonalFacts(observations) && (
+                    <p className="fb-field-note">
+                      未填写共用教学内容，生成时将只依据已记录的个人情况。
+                    </p>
+                  )}
+                {!readonly && (
+                  <div className="fb-generate-actions">
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      disabled={
+                        Boolean(progress) || !hasPersonalFacts(observations)
+                      }
+                      onClick={() => requestGenerate(selected)}
+                    >
+                      <Sparkles size={16} />
+                      {selectedEntry.content.trim()
+                        ? "重新生成候选"
+                        : "AI 生成反馈"}
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-ghost button-sm"
+                      disabled={
+                        Boolean(progress) || !hasObservations(observations)
+                      }
+                      onClick={() => organize(selected)}
+                    >
+                      <WandSparkles size={15} />
+                      按原始记录整理草稿
+                    </button>
+                    <small>整理草稿不调用 AI，不添加未记录的事实。</small>
+                  </div>
+                )}
+                {failures.has(selected.id) && (
+                  <p className="fb-inline-error" role="alert">
+                    {failures.get(selected.id)}
+                  </p>
+                )}
+              </section>
+              <section className="fb-output">
+                <div className="fb-panel-title">
+                  <div>
+                    <h3>发给家长的反馈</h3>
+                    <p>可以直接手写，也可以编辑生成后的正文。</p>
+                  </div>
+                  <span className="fb-source-badge">
+                    {selectedEntry.generationSource === "ai"
+                      ? "AI 草稿"
+                      : selectedEntry.generationSource === "outline"
+                        ? "原始记录整理"
+                        : "自由编辑"}
+                  </span>
+                </div>
+                {stale && (
+                  <div className="fb-stale" role="status">
+                    原始记录已修改，正文仍保留旧内容。请重新生成，或修改并再次核对。
+                  </div>
+                )}
+                <label
+                  className="field fb-output-field"
+                  htmlFor={`${fieldId}-content`}
+                >
+                  <span className="sr-only">{selected.name}的家长反馈正文</span>
+                  <textarea
+                    id={`${fieldId}-content`}
+                    rows={17}
+                    maxLength={10000}
+                    readOnly={readonly}
+                    value={selectedEntry.content}
+                    placeholder="家长反馈会显示在这里。你也可以直接手写，已有内容不会被生成结果直接覆盖。"
+                    onChange={(event) => {
+                      const content = event.target.value;
+                      changeEntry(selected.id, (entry) => ({
+                        ...entry,
+                        content,
+                        reviewed: false,
+                        generationSource: "manual",
+                      }));
+                    }}
+                  />
+                </label>
+                <div className="fb-output-count">
+                  {selectedEntry.content.length} / 10000 字
+                </div>
+                <label className="fb-review-check">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(selectedEntry.reviewed)}
+                    disabled={readonly || !selectedEntry.content.trim()}
+                    onChange={(event) => {
+                      const reviewed = event.target.checked;
+                      changeEntry(selected.id, (entry) => ({
+                        ...entry,
+                        reviewed,
+                      }));
+                    }}
+                  />
+                  <span>
+                    已核对事实与措辞，可以发给家长
+                    <small>修改记录或正文后，需要重新核对。</small>
+                  </span>
+                </label>
                 <button
                   type="button"
-                  className="button button-secondary"
-                  disabled={!filledCount || copying}
-                  onClick={() => void copy()}
+                  className="button button-secondary fb-copy-button"
+                  disabled={
+                    !selectedEntry.reviewed ||
+                    !selectedEntry.content.trim() ||
+                    copying
+                  }
+                  onClick={() => void copy(selected)}
                 >
                   <Copy size={16} />
-                  复制全班反馈
+                  复制 {selected.name} 的反馈
                 </button>
-              )}
-              {!readonly && (
-                <button
-                  type="button"
-                  className="button button-primary"
-                  disabled={!filledCount || (!dirty && Boolean(draft.id))}
-                  onClick={save}
-                >
-                  <Save size={16} />
-                  保存本次反馈
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-        <aside className="fb-history" aria-label="反馈历史">
-          <div className="fb-history-heading">
-            <h3>
-              <Clock3 size={17} />
-              历史反馈
-            </h3>
-            <span>{orderedSessions.length} 次</span>
-          </div>
-          {orderedSessions.length ? (
-            <>
-              <div className="fb-history-list">
-                {orderedSessions.slice(0, historyLimit).map((session) => {
-                  const filled = session.entries.filter((entry) =>
-                    entry.content.trim(),
-                  ).length;
-                  return (
-                    <button
-                      key={session.id}
-                      type="button"
-                      className={`fb-history-item ${session.id === draft.id ? "fb-history-active" : ""}`}
-                      aria-current={
-                        session.id === draft.id ? "true" : undefined
-                      }
-                      onClick={() => requestSession(session)}
-                    >
-                      <strong>{formatLessonAt(session.lessonAt)}</strong>
-                      <span>
-                        已填写 {filled} / {session.entries.length} 人
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              {orderedSessions.length > historyLimit && (
-                <button
-                  type="button"
-                  className="button button-ghost button-sm fb-more"
-                  onClick={() => setHistoryLimit((limit) => limit + 20)}
-                >
-                  查看更早的反馈
-                </button>
-              )}
+                <p className="fb-field-note">
+                  只复制到剪贴板，由你决定何时、发给哪位家长。
+                </p>
+              </section>
             </>
-          ) : (
-            <div className="fb-history-empty">
-              <FileText size={25} />
-              <p>还没有保存过反馈</p>
-              <span>保存后，可在这里查看和继续编辑。</span>
-            </div>
           )}
-        </aside>
+        </div>
+      )}
+      <div className="fb-savebar">
+        <p>
+          <CheckCheck size={16} />
+          已核对 {reviewedCount} / {students.length} 人
+          <span>{dirty ? "修改尚未保存" : "草稿可随时继续补充"}</span>
+        </p>
+        <div>
+          {module !== "one-to-one" && (
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={!reviewedCount || copying}
+              onClick={() => void copy()}
+            >
+              <Copy size={16} />
+              复制已核对反馈（{reviewedCount}）
+            </button>
+          )}
+          {!readonly && (
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={
+                saving ||
+                !hasFeedbackContent(draft) ||
+                (!dirty && sessions.some((session) => session.id === draft.id))
+              }
+              onClick={() => void save()}
+            >
+              {saving ? (
+                <LoaderCircle size={16} className="fb-spin" />
+              ) : (
+                <Save size={16} />
+              )}
+              {saving ? "正在保存…" : "保存反馈草稿"}
+            </button>
+          )}
+        </div>
       </div>
-      {pendingSession && (
-        <Modal
-          title="放弃当前未保存的修改？"
-          onClose={() => setPendingSession(null)}
-        >
-          <p className="confirm-message">
-            当前反馈有未保存的内容。返回后可以先保存；继续切换将丢弃这些修改。
+      <details className="fb-history">
+        <summary>
+          <span>
+            <Clock3 size={17} />
+            历史反馈 <strong>{orderedSessions.length} 次 · 最近编辑优先</strong>
+          </span>
+          <ChevronRight size={16} />
+        </summary>
+        {orderedSessions.length ? (
+          <>
+            <div className="fb-history-list">
+              {orderedSessions.slice(0, historyLimit).map((session) => (
+                <button
+                  type="button"
+                  key={session.id}
+                  className={`fb-history-item ${session.id === draft.id ? "fb-history-active" : ""}`}
+                  onClick={() => requestSession(session)}
+                >
+                  <strong>{formatFeedbackPeriod(session)}</strong>
+                  <span>
+                    {
+                      session.entries.filter((entry) => entry.content.trim())
+                        .length
+                    }{" "}
+                    人有正文 ·{" "}
+                    {
+                      session.entries.filter(
+                        (entry) => entry.reviewed && entry.content.trim(),
+                      ).length
+                    }{" "}
+                    人已核对
+                  </span>
+                </button>
+              ))}
+            </div>
+            {historyLimit < orderedSessions.length && (
+              <button
+                type="button"
+                className="button button-ghost button-sm fb-more"
+                onClick={() => setHistoryLimit((limit) => limit + 20)}
+              >
+                查看更多历史
+              </button>
+            )}
+          </>
+        ) : (
+          <p className="fb-history-empty">
+            保存后，可以在这里回到之前的课程或周期继续补写。
           </p>
+        )}
+      </details>
+      {confirmation && (
+        <Modal title={confirmation.title} onClose={() => setConfirmation(null)}>
+          <p className="confirm-message">{confirmation.message}</p>
           <div className="form-actions">
             <button
               type="button"
               className="button button-secondary"
-              onClick={() => setPendingSession(null)}
+              onClick={() => setConfirmation(null)}
             >
               返回编辑
             </button>
             <button
               type="button"
-              className="button button-danger"
-              onClick={() => loadSession(pendingSession.session)}
+              className="button button-primary"
+              onClick={confirmation.action}
             >
-              放弃修改并继续
+              {confirmation.label}
+            </button>
+          </div>
+        </Modal>
+      )}
+      {proposal && (
+        <Modal
+          title={`${proposal.student.name} · 比较新候选草稿`}
+          subtitle={
+            proposal.source === "ai"
+              ? "现有正文尚未改变。接受替换后仍需人工核对。"
+              : "这份草稿只整理原始记录，没有调用 AI。"
+          }
+          wide
+          onClose={() => setProposal(null)}
+        >
+          <div className="fb-proposal-columns">
+            <div>
+              <h3>现有正文</h3>
+              <pre>
+                {entryFor(draft, proposal.student.id).content || "（当前为空）"}
+              </pre>
+            </div>
+            <div>
+              <h3>新候选草稿</h3>
+              <pre>{proposal.content}</pre>
+            </div>
+          </div>
+          {!proposalValid && (
+            <p className="fb-inline-error">
+              生成后原始输入又有变化，本候选不能覆盖当前内容。请关闭后按最新记录重新生成。
+            </p>
+          )}
+          <div className="form-actions">
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => setProposal(null)}
+            >
+              保留原文
+            </button>
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!proposalValid}
+              onClick={() => {
+                if (
+                  !canApplyGeneration(
+                    proposal.revision,
+                    revision(proposal.student.id),
+                  )
+                )
+                  return;
+                acceptGenerated(
+                  proposal.student,
+                  proposal.content,
+                  proposal.source,
+                  proposal.signature,
+                );
+                setProposal(null);
+                setStatus({
+                  text: "已采用候选草稿，请核对事实与措辞后再复制。",
+                });
+              }}
+            >
+              接受并替换正文
             </button>
           </div>
         </Modal>
@@ -490,7 +1530,7 @@ export default function FeedbackWorkspace({
             />
           </label>
           <p className="field-hint">
-            选中文字后，按 Ctrl+C（Mac 按 ⌘C），或使用设备的复制菜单。
+            选中文字后按 Ctrl+C（Mac 按 ⌘C），或使用设备的复制菜单。
           </p>
           <div className="form-actions">
             <button

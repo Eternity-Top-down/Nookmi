@@ -42,6 +42,15 @@ export function formatLessonAt(value: string): string {
   return `${year}年${Number(month)}月${Number(date)}日 ${time}`;
 }
 
+export function formatFeedbackPeriod(session: FeedbackSession): string {
+  if (session.module === "one-to-one" || !session.brief) {
+    return formatLessonAt(session.lessonAt);
+  }
+  const { periodStart, periodEnd } = session.brief;
+  const label = session.module === "evening" ? "周反馈" : "月反馈";
+  return `${label} · ${periodStart.replace(/-/g, ".")} — ${periodEnd.replace(/-/g, ".")}`;
+}
+
 /** Export only the selected student's feedback, never classmates' content. */
 export function formatStudentFeedback(
   session: FeedbackSession,
@@ -52,8 +61,16 @@ export function formatStudentFeedback(
     .find((entry) => entry.studentId === student.id)
     ?.content.trim();
   if (!content) return "";
-  const title = `${MODULE_LABELS[session.module]}课后反馈${className?.trim() ? ` · ${className.trim()}` : ""}`;
-  return `${title}\n学生：${student.name}\n上课时间：${formatLessonAt(session.lessonAt)}\n\n${content}`;
+  const cycle =
+    session.brief && session.module !== "one-to-one"
+      ? session.module === "evening"
+        ? "周反馈"
+        : "月反馈"
+      : "课后反馈";
+  const title = `${MODULE_LABELS[session.module]}${cycle}${className?.trim() ? ` · ${className.trim()}` : ""}`;
+  const timeLabel =
+    session.brief && session.module !== "one-to-one" ? "反馈周期" : "上课时间";
+  return `${title}\n学生：${student.name}\n${timeLabel}：${formatFeedbackPeriod(session)}\n\n${content}`;
 }
 
 /** Keep roster order and omit students whose feedback is still blank. */

@@ -2,10 +2,13 @@ import {
   EMPTY_STUDENT,
   type AppData,
   type ClassGroup,
+  type FeedbackBrief,
+  type FeedbackEntry,
   type FeedbackSession,
   type ImportRow,
   type Student,
   type StudentFields,
+  type StudentObservations,
   type TeachingNote,
 } from "./types";
 
@@ -328,6 +331,85 @@ function array(value: unknown, label: string, max: number): unknown[] {
   return value;
 }
 
+function feedbackBrief(value: unknown): FeedbackBrief {
+  const row = object(value, "反馈共用内容");
+  const periodStart = calendarDate(row.periodStart, "反馈开始日期");
+  const periodEnd = calendarDate(row.periodEnd, "反馈结束日期");
+  if (
+    periodStart < "1900-01-01" ||
+    periodEnd > "2100-12-31" ||
+    periodStart > periodEnd
+  )
+    throw new Error(
+      "反馈起止日期须在 1900—2100 年内，且开始日期不能晚于结束日期",
+    );
+  const subjects = array(row.subjects, "反馈学科", 10).map((value) =>
+    string(value, "反馈学科名称", 50, true).trim(),
+  );
+  if (new Set(subjects).size !== subjects.length)
+    throw new Error("反馈学科不能重复");
+  if (row.length !== "brief" && row.length !== "standard")
+    throw new Error("反馈篇幅须为 brief 或 standard");
+  return {
+    periodStart,
+    periodEnd,
+    subjects,
+    teachingContent: string(row.teachingContent, "共用教学内容", 5000),
+    commonTasks: string(row.commonTasks, "共用作业任务", 5000),
+    focus: string(row.focus, "本次反馈重点", 5000),
+    length: row.length,
+  };
+}
+
+function studentObservations(value: unknown): StudentObservations {
+  const row = object(value, "学生事实");
+  const rawSubjects = object(row.subjects, "分学科事实");
+  const entries = Object.entries(rawSubjects);
+  if (entries.length > 10) throw new Error("分学科事实不能超过 10 科");
+  // A subject is user-supplied text: keep only own keys and never inherit
+  // constructor / __proto__ when a later form looks up a missing subject.
+  const subjects: Record<string, string> = Object.create(null);
+  for (const [rawName, value] of entries) {
+    const name = string(rawName, "事实学科名称", 50, true).trim();
+    if (Object.hasOwn(subjects, name))
+      throw new Error("分学科事实的学科名称不能重复");
+    subjects[name] = string(value, "分学科事实内容", 2000);
+  }
+  return {
+    performance: string(row.performance, "课堂表现事实", 2000),
+    strengths: string(row.strengths, "进步与闪光点事实", 2000),
+    difficulties: string(row.difficulties, "困难与问题事实", 2000),
+    plan: string(row.plan, "后续建议事实", 2000),
+    tasks: string(row.tasks, "作业任务事实", 2000),
+    subjects,
+  };
+}
+
+function hasBriefText(brief?: FeedbackBrief): boolean {
+  return Boolean(
+    brief &&
+      [brief.teachingContent, brief.commonTasks, brief.focus].some((value) =>
+        value.trim(),
+      ),
+  );
+}
+
+function hasEntryText(entry: FeedbackEntry): boolean {
+  if (entry.content.trim()) return true;
+  const observations = entry.observations;
+  return Boolean(
+    observations &&
+      [
+        observations.performance,
+        observations.strengths,
+        observations.difficulties,
+        observations.plan,
+        observations.tasks,
+        ...Object.values(observations.subjects),
+      ].some((value) => value.trim()),
+  );
+}
+
 export function parseBackup(text: string): AppData {
   if (text.length > 20_000_000)
     throw new Error("备份文件过大（最多 20 MB），请检查文件是否正确");
@@ -339,7 +421,7 @@ export function parseBackup(text: string): AppData {
   }
   const source = object(parsed, "备份");
   if (source.schemaVersion !== 1)
-    throw new Error("不支持该备份版本，请使用 Nookmi v0.1 导出的备份");
+    throw new Error("不支持该备份版本，请使用 Nookmi 导出的兼容备份");
   const allIds = new Set<string>();
   const id = (value: unknown, label: string) => {
     const result = string(value, label, 128, true);
@@ -459,35 +541,63 @@ export function parseBackup(text: string): AppData {
           throw new Error("课程反馈所属班级不存在，或与反馈模块不一致");
       }
       const entryIds = new Set<string>();
-      const entries = array(row.entries, "学生反馈", 50_000).map((value) => {
-        const entry = object(value, "学生反馈");
-        const entryStudentId = string(
-          entry.studentId,
-          "学生反馈所属学生",
-          128,
-          true,
-        );
-        if (entryIds.has(entryStudentId))
-          throw new Error("同一次课程反馈中存在重复学生");
-        entryIds.add(entryStudentId);
-        const target = studentMap.get(entryStudentId);
-        if (
-          !target ||
-          target.module !== row.module ||
-          (row.module === "one-to-one"
-            ? entryStudentId !== studentId
-            : target.classId !== classId)
-        )
-          throw new Error("学生反馈与课程反馈的目标学生或班级不一致");
-        return {
-          studentId: entryStudentId,
-          content: string(entry.content, "学生反馈内容", 10_000),
-        };
-      });
+      const entries = array(row.entries, "学生反馈", 50_000).map(
+        (value): FeedbackEntry => {
+          const entry = object(value, "学生反馈");
+          const entryStudentId = string(
+            entry.studentId,
+            "学生反馈所属学生",
+            128,
+            true,
+          );
+          if (entryIds.has(entryStudentId))
+            throw new Error("同一次课程反馈中存在重复学生");
+          entryIds.add(entryStudentId);
+          const target = studentMap.get(entryStudentId);
+          if (
+            !target ||
+            target.module !== row.module ||
+            (row.module === "one-to-one"
+              ? entryStudentId !== studentId
+              : target.classId !== classId)
+          )
+            throw new Error("学生反馈与课程反馈的目标学生或班级不一致");
+          const result: FeedbackEntry = {
+            studentId: entryStudentId,
+            content: string(entry.content, "学生反馈内容", 10_000),
+          };
+          if (Object.hasOwn(entry, "observations"))
+            result.observations = studentObservations(entry.observations);
+          if (Object.hasOwn(entry, "reviewed")) {
+            if (typeof entry.reviewed !== "boolean")
+              throw new Error("反馈核对状态必须是布尔值");
+            result.reviewed = entry.reviewed;
+          }
+          if (Object.hasOwn(entry, "generationSource")) {
+            if (
+              entry.generationSource !== "ai" &&
+              entry.generationSource !== "manual" &&
+              entry.generationSource !== "outline"
+            )
+              throw new Error("反馈生成来源须为 ai、manual 或 outline");
+            result.generationSource = entry.generationSource;
+          }
+          if (Object.hasOwn(entry, "generatedFrom"))
+            result.generatedFrom = string(
+              entry.generatedFrom,
+              "反馈生成依据标记",
+              256,
+            );
+          return result;
+        },
+      );
+      const brief = Object.hasOwn(row, "brief")
+        ? feedbackBrief(row.brief)
+        : undefined;
       if (row.module === "one-to-one" && entries.length !== 1)
         throw new Error("一对一课程反馈必须包含目标学生的一条反馈");
-      if (!entries.some((entry) => entry.content.trim()))
-        throw new Error("课程反馈至少需要一位学生的非空反馈内容");
+      if (!entries.some(hasEntryText) && !hasBriefText(brief))
+        throw new Error("课程反馈至少需要非空反馈内容、学生事实或共用内容");
       return {
         id: id(row.id, "课程反馈 ID"),
         module: row.module,
@@ -495,6 +605,7 @@ export function parseBackup(text: string): AppData {
         studentId,
         lessonAt: localDateTime(row.lessonAt, "上课时间"),
         entries,
+        ...(brief ? { brief } : {}),
         createdAt: timestamp(row.createdAt, "课程反馈创建时间"),
         updatedAt: timestamp(row.updatedAt, "课程反馈更新时间"),
       };
@@ -513,7 +624,7 @@ export function pruneFeedbackForStudent(
     const entries = session.entries.filter(
       (entry) => entry.studentId !== studentId,
     );
-    if (!entries.some((entry) => entry.content.trim())) return [];
+    if (!entries.some(hasEntryText) && !hasBriefText(session.brief)) return [];
     return [
       entries.length === session.entries.length
         ? session

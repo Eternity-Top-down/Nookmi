@@ -3,9 +3,11 @@ import {
   copyFeedbackText,
   currentLocalLessonAt,
   formatClassFeedback,
+  formatFeedbackPeriod,
   formatStudentFeedback,
   isValidLessonAt,
 } from "./feedback";
+import { defaultBrief } from "./feedbackModel";
 import { EMPTY_STUDENT, type FeedbackSession, type Student } from "./types";
 
 const students: Student[] = ["小林", "小陈", "小周"].map((name, index) => ({
@@ -38,6 +40,28 @@ const session: FeedbackSession = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("feedback text", () => {
+  it("labels weekly and monthly feedback by the selected period while keeping legacy wording", () => {
+    const weekly = {
+      ...session,
+      module: "evening" as const,
+      brief: defaultBrief("evening", ["初二"], new Date(2026, 9, 21)),
+    };
+    const monthly = {
+      ...session,
+      brief: defaultBrief("course", ["初二"], new Date(2026, 9, 21)),
+    };
+    expect(formatFeedbackPeriod(weekly)).toBe(
+      "周反馈 · 2026.10.19 — 2026.10.23",
+    );
+    expect(formatFeedbackPeriod(monthly)).toBe(
+      "月反馈 · 2026.10.01 — 2026.10.31",
+    );
+    expect(formatStudentFeedback(weekly, students[0])).toContain("晚辅周反馈");
+    expect(formatStudentFeedback(monthly, students[0])).toContain("班课月反馈");
+    expect(formatStudentFeedback(session, students[0])).toContain(
+      "上课时间：2026年10月21日 19:30",
+    );
+  });
   it("copies only the selected student's content and preserves paragraphs", () => {
     const text = formatStudentFeedback(session, students[0], "初二 A 班");
     expect(text).toContain("学生：小林");

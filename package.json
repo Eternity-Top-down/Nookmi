@@ -1,10 +1,13 @@
 {
   "name": "nookmi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "面向数学教师的一对一、晚辅与班课工作台",
   "scripts": {
+    "start": "node scripts/start.mjs",
+    "backend": "node scripts/start.mjs --backend",
+    "setup:backend": "node scripts/setup-backend.mjs",
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",

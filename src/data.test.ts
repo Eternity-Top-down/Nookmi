@@ -13,8 +13,10 @@ import {
 import {
   EMPTY_STUDENT,
   type AppData,
+  type FeedbackBrief,
   type FeedbackSession,
   type Student,
+  type StudentObservations,
 } from "./types";
 
 const now = "2026-10-21T08:00:00.000Z";
@@ -36,6 +38,29 @@ const minimal: AppData = {
   records: [],
 };
 const decode = (data: unknown) => parseBackup(JSON.stringify(data));
+
+function observationFixture(): StudentObservations {
+  return {
+    performance: "",
+    strengths: "",
+    difficulties: "",
+    plan: "",
+    tasks: "",
+    subjects: {},
+  };
+}
+
+function briefFixture(): FeedbackBrief {
+  return {
+    periodStart: "2026-10-19",
+    periodEnd: "2026-10-23",
+    subjects: ["数学", "物理"],
+    teachingContent: "分式运算；密度计算。",
+    commonTasks: "",
+    focus: "",
+    length: "standard",
+  };
+}
 
 function feedbackFixture(): AppData & { feedbackSessions: FeedbackSession[] } {
   return {
@@ -569,6 +594,268 @@ describe("course feedback backups", () => {
   });
 });
 
+describe("structured feedback draft backups", () => {
+  it("preserves all optional fields and leaves old feedback shape unchanged", () => {
+    const oldData = feedbackFixture();
+    expect(decode(oldData)).toEqual(oldData);
+    expect(Object.hasOwn(decode(oldData).feedbackSessions![0], "brief")).toBe(
+      false,
+    );
+    expect(
+      Object.hasOwn(
+        decode(oldData).feedbackSessions![0].entries[0],
+        "reviewed",
+      ),
+    ).toBe(false);
+    const data = feedbackFixture();
+    data.feedbackSessions[1].brief = briefFixture();
+    data.feedbackSessions[1].entries[0] = {
+      ...data.feedbackSessions[1].entries[0],
+      observations: {
+        ...observationFixture(),
+        performance: "周三独立完成，周四有两次走神。",
+        subjects: { 数学: "分母通分仍需提醒。" },
+      },
+      reviewed: false,
+      generationSource: "ai",
+      generatedFrom: "facts-2e63f910",
+    };
+    expect(decode(data)).toEqual(data);
+  });
+
+  it.each([
+    "performance",
+    "strengths",
+    "difficulties",
+    "plan",
+    "tasks",
+  ] as const)("keeps a notes-only draft using the %s field", (field) => {
+    const data = feedbackFixture();
+    data.feedbackSessions[0].entries[0] = {
+      studentId: student.id,
+      content: "",
+      observations: { ...observationFixture(), [field]: "真实事实关键词" },
+    };
+    expect(decode(data)).toEqual(data);
+  });
+
+  it("allows a subject-only observation draft before generating prose", () => {
+    const data = feedbackFixture();
+    data.feedbackSessions[0].entries[0] = {
+      studentId: student.id,
+      content: "",
+      observations: {
+        ...observationFixture(),
+        subjects: { 化学: "化学式角标漏写" },
+      },
+    };
+    expect(decode(data)).toEqual(data);
+  });
+
+  it.each(["teachingContent", "commonTasks", "focus"] as const)(
+    "allows a common-brief draft with only %s",
+    (field) => {
+      const data = feedbackFixture();
+      data.feedbackSessions[1].entries = [];
+      data.feedbackSessions[1].brief = {
+        ...briefFixture(),
+        teachingContent: "",
+        commonTasks: "",
+        focus: "",
+        [field]: "本周共用内容",
+      };
+      expect(decode(data)).toEqual(data);
+    },
+  );
+
+  it("does not treat dates, selected subjects, flags or whitespace as meaningful draft content", () => {
+    const data = feedbackFixture();
+    data.feedbackSessions[0].entries[0] = {
+      studentId: student.id,
+      content: "  ",
+      observations: {
+        ...observationFixture(),
+        strengths: "\n",
+        subjects: { 数学: " \t" },
+      },
+      reviewed: true,
+      generationSource: "manual",
+      generatedFrom: "signature",
+    };
+    data.feedbackSessions[0].brief = {
+      ...briefFixture(),
+      teachingContent: " \n",
+      commonTasks: "",
+      focus: "",
+    };
+    expect(() => decode(data)).toThrow("非空反馈");
+  });
+
+  it.each([
+    ["2026-02-30", "2026-03-01"],
+    ["2026-10-23", "2026-10-19"],
+    ["1899-12-31", "1900-01-01"],
+    ["2100-12-31", "2101-01-01"],
+    ["2026-1-1", "2026-01-02"],
+  ])(
+    "rejects invalid or reversed period %s to %s",
+    (periodStart, periodEnd) => {
+      const data = feedbackFixture();
+      data.feedbackSessions[1].brief = {
+        ...briefFixture(),
+        periodStart,
+        periodEnd,
+      };
+      expect(() => decode(data)).toThrow("日期");
+    },
+  );
+
+  it("accepts a same-day leap-year period and validates every brief field", () => {
+    const data = feedbackFixture();
+    const session = data.feedbackSessions[1];
+    const valid = {
+      ...briefFixture(),
+      periodStart: "2028-02-29",
+      periodEnd: "2028-02-29",
+    };
+    data.feedbackSessions[1].brief = valid;
+    expect(decode(data)).toEqual(data);
+    for (const malformed of [
+      null,
+      [],
+      { ...valid, length: "long" },
+      { ...valid, teachingContent: null },
+      { ...valid, teachingContent: "字".repeat(5001) },
+      { ...valid, commonTasks: "字".repeat(5001) },
+      { ...valid, focus: "字".repeat(5001) },
+    ]) {
+      expect(() =>
+        decode({
+          ...data,
+          feedbackSessions: [{ ...session, brief: malformed }],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("requires a unique bounded subject list and normalizes outer whitespace", () => {
+    const data = feedbackFixture();
+    const session = data.feedbackSessions[1];
+    data.feedbackSessions[1].brief = {
+      ...briefFixture(),
+      subjects: [" 数学 ", "物理"],
+    };
+    expect(decode(data).feedbackSessions![1].brief!.subjects).toEqual([
+      "数学",
+      "物理",
+    ]);
+    for (const subjects of [
+      {},
+      [""],
+      [" "],
+      ["数学", " 数学 "],
+      ["科".repeat(51)],
+      Array.from({ length: 11 }, (_, i) => `科目${i}`),
+    ]) {
+      expect(() =>
+        decode({
+          ...data,
+          feedbackSessions: [
+            { ...session, brief: { ...briefFixture(), subjects } },
+          ],
+        }),
+      ).toThrow("学科");
+    }
+  });
+
+  it("validates all observation fields and their own subject keys", () => {
+    const data = feedbackFixture();
+    const session = data.feedbackSessions[0];
+    for (const malformed of [
+      null,
+      [],
+      { ...observationFixture(), performance: null },
+      { ...observationFixture(), strengths: "字".repeat(2001) },
+      { ...observationFixture(), difficulties: "字".repeat(2001) },
+      { ...observationFixture(), plan: "字".repeat(2001) },
+      { ...observationFixture(), tasks: "字".repeat(2001) },
+      { ...observationFixture(), subjects: [] },
+      { ...observationFixture(), subjects: { " ": "事实" } },
+      { ...observationFixture(), subjects: { ["科".repeat(51)]: "事实" } },
+      { ...observationFixture(), subjects: { 数学: "字".repeat(2001) } },
+      { ...observationFixture(), subjects: { 数学: "事实", " 数学 ": "重复" } },
+      {
+        ...observationFixture(),
+        subjects: Object.fromEntries(
+          Array.from({ length: 11 }, (_, i) => [`学科${i}`, "事实"]),
+        ),
+      },
+    ]) {
+      expect(() =>
+        decode({
+          ...data,
+          feedbackSessions: [
+            {
+              ...session,
+              entries: [{ ...session.entries[0], observations: malformed }],
+            },
+          ],
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("handles prototype-like subject names as own text without inherited properties", () => {
+    const data = feedbackFixture();
+    data.feedbackSessions[0].entries[0].observations = {
+      ...observationFixture(),
+      subjects: JSON.parse(
+        '{"__proto__":"事实一","constructor":"事实二"}',
+      ) as Record<string, string>,
+    };
+    const subjects =
+      decode(data).feedbackSessions![0].entries[0].observations!.subjects;
+    expect(Object.getPrototypeOf(subjects)).toBeNull();
+    expect(Object.hasOwn(subjects, "__proto__")).toBe(true);
+    expect(subjects.__proto__).toBe("事实一");
+    expect(subjects.constructor).toBe("事实二");
+    expect(subjects.toString).toBeUndefined();
+    expect({}.toString).toBe(Object.prototype.toString);
+  });
+
+  it("enforces a boolean reviewed flag, known source and bounded generation signature", () => {
+    const data = feedbackFixture();
+    const session = data.feedbackSessions[0];
+    for (const patch of [
+      { reviewed: "false" },
+      { reviewed: null },
+      { reviewed: 0 },
+      { generationSource: "constructor" },
+      { generationSource: null },
+      { generatedFrom: "x".repeat(257) },
+      { generatedFrom: {} },
+    ]) {
+      expect(() =>
+        decode({
+          ...data,
+          feedbackSessions: [
+            { ...session, entries: [{ ...session.entries[0], ...patch }] },
+          ],
+        }),
+      ).toThrow();
+    }
+    for (const generationSource of ["ai", "manual", "outline"] as const) {
+      data.feedbackSessions[0].entries[0] = {
+        ...session.entries[0],
+        reviewed: true,
+        generationSource,
+        generatedFrom: "x".repeat(256),
+      };
+      expect(decode(data)).toEqual(data);
+    }
+  });
+});
+
 describe("feedback cleanup when deleting a student", () => {
   it("removes the student's one-to-one sessions and preserves unrelated feedback", () => {
     const sessions = feedbackFixture().feedbackSessions;
@@ -603,6 +890,27 @@ describe("feedback cleanup when deleting a student", () => {
     const result = pruneFeedbackForStudent(sessions, "evening-student-2");
     expect(result[1].entries).toEqual([sessions[1].entries[0]]);
     expect(result[1].entries[0].content).toBe("作业已订正。");
+  });
+
+  it("keeps another student's facts-only draft when removing a classmate", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    sessions[1].entries[1].observations = {
+      ...observationFixture(),
+      difficulties: "遇到难题先空着",
+    };
+    const result = pruneFeedbackForStudent(sessions, "evening-student-1");
+    expect(result[1].id).toBe(sessions[1].id);
+    expect(result[1].entries).toEqual([sessions[1].entries[1]]);
+    expect(sessions[1].entries).toHaveLength(2);
+  });
+
+  it("keeps a useful shared brief even after removing its last student entry", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    sessions[1].brief = briefFixture();
+    sessions[1].entries = [sessions[1].entries[0]];
+    const result = pruneFeedbackForStudent(sessions, "evening-student-1");
+    expect(result[1].brief).toEqual(briefFixture());
+    expect(result[1].entries).toEqual([]);
   });
 });
 

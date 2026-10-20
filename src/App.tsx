@@ -38,9 +38,12 @@ import {
 } from "lucide-react";
 import { ClassForm, ImportStudents, Modal, StudentForm } from "./components";
 import FeedbackWorkspace from "./FeedbackWorkspace";
+import AISettings from "./AISettings";
+import { hasObservations } from "./feedbackModel";
+import { ApiError, getWorkspace, putWorkspace } from "./api";
 import {
   copyFeedbackText,
-  formatLessonAt,
+  formatFeedbackPeriod,
   formatStudentFeedback,
 } from "./feedback";
 import { version } from "../package.json";
@@ -51,7 +54,6 @@ import {
   newId,
   parseBackup,
   pruneFeedbackForStudent,
-  saveData,
 } from "./data";
 import { parseRoute, routeUrl, type Route } from "./routes";
 import {
@@ -67,21 +69,21 @@ const MODULES = {
   "one-to-one": {
     title: "一对一",
     english: "ONE-ON-ONE",
-    description: "选择学生，填写本次课程反馈，保存后快速复制。",
+    description: "记下本次课的真实情况，生成有针对性的家长反馈。",
     icon: UserRound,
     color: "green",
   },
   evening: {
     title: "晚辅",
     english: "EVENING STUDY",
-    description: "进入班级，集中完成每位学生的晚辅反馈。",
+    description: "按周整理作业、习惯与各科学习情况，完成每位学生的晚辅反馈。",
     icon: Moon,
     color: "purple",
   },
   course: {
     title: "班课",
     english: "GROUP CLASSES",
-    description: "按班级整理本次课程反馈，一次保存，逐人复制。",
+    description: "教学内容全班共用，结合每位学生的表现完成月度反馈。",
     icon: BookOpen,
     color: "orange",
   },
@@ -92,6 +94,7 @@ type ModalState =
   | { kind: "import" }
   | { kind: "backup" }
   | { kind: "note" }
+  | { kind: "ai" }
   | null;
 type Confirmation = {
   title: string;
@@ -188,9 +191,17 @@ function StatCard({
 }
 
 export default function App() {
-  const [initial] = useState(loadData);
-  const [data, setData] = useState<AppData>(initial.data);
-  const [storageError, setStorageError] = useState(initial.error);
+  const [legacy] = useState(loadData);
+  const [data, setData] = useState<AppData>(EMPTY_DATA);
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+  const [reloadAttempt, setReloadAttempt] = useState(0);
+  const [workspaceEpoch, setWorkspaceEpoch] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [conflict, setConflict] = useState(false);
+  const [showMigration, setShowMigration] = useState(true);
+  const revision = useRef(0);
+  const savingLock = useRef(false);
   const [route, setRoute] = useState<Route>(getRoute);
   const [modal, setModal] = useState<ModalState>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
@@ -217,6 +228,26 @@ export default function App() {
   const backupInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    let active = true;
+    setReady(false);
+    setStorageError(null);
+    getWorkspace()
+      .then((result) => {
+        if (!active) return;
+        revision.current = result.revision;
+        setData(result.data);
+        setReady(true);
+        setConflict(false);
+      })
+      .catch((error: Error) => {
+        if (active) setStorageError(error.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [reloadAttempt]);
+
+  useEffect(() => {
     const onHash = () => {
       const nextRoute = getRoute();
       setSidebarOpen(false);
@@ -224,8 +255,9 @@ export default function App() {
       if (feedbackDirty.current) {
         window.history.replaceState(null, "", routeUrl(routeRef.current));
         setConfirmation({
-          title: "还有未保存的反馈",
-          message: "离开后会丢失当前修改。可以取消，先保存本次反馈。",
+          title: "当前反馈尚未完成",
+          message:
+            "当前有未保存的修改或正在进行的生成。离开会放弃未保存内容并停止生成，可以取消后继续处理。",
           label: "放弃修改并离开",
           action: () => {
             feedbackDirty.current = false;
@@ -244,18 +276,8 @@ export default function App() {
       setConfirmation(null);
     };
     window.addEventListener("hashchange", onHash);
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== "nookmi:data:v1" && event.key !== null) return;
-      const result = loadData();
-      setData(result.data);
-      setStorageError(result.error);
-      setModal(null);
-      setConfirmation(null);
-      setToast({ message: "已同步此浏览器其他页面中的最新数据。" });
-    };
-    window.addEventListener("storage", onStorage);
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (feedbackDirty.current) {
+      if (feedbackDirty.current || savingLock.current) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -263,7 +285,6 @@ export default function App() {
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       window.removeEventListener("hashchange", onHash);
-      window.removeEventListener("storage", onStorage);
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, []);
@@ -308,7 +329,9 @@ export default function App() {
   const personalFeedback = scopedFeedback
     .filter((s) =>
       s.entries.some(
-        (entry) => entry.studentId === student?.id && entry.content.trim(),
+        (entry) =>
+          entry.studentId === student?.id &&
+          (entry.content.trim() || hasObservations(entry.observations)),
       ),
     )
     .sort((a, b) => b.lessonAt.localeCompare(a.lessonAt));
@@ -340,8 +363,9 @@ export default function App() {
     if (next === activePanel) return;
     if (feedbackDirty.current) {
       setConfirmation({
-        title: "还有未保存的反馈",
-        message: "切换页面前，请先保存当前反馈，或确认放弃修改。",
+        title: "当前反馈尚未完成",
+        message:
+          "当前有未保存的修改或正在进行的生成。切换页面会放弃未保存内容并停止生成，可以取消后继续处理。",
         label: "放弃修改并切换",
         action: () => {
           feedbackDirty.current = false;
@@ -351,7 +375,7 @@ export default function App() {
       });
     } else setActivePanel(next);
   }
-  function saveFeedback(session: FeedbackSession) {
+  async function saveFeedback(session: FeedbackSession) {
     return persist(
       {
         ...data,
@@ -366,6 +390,16 @@ export default function App() {
     session: FeedbackSession,
     target: Student,
   ) {
+    const entry = session.entries.find(
+      (value) => value.studentId === target.id,
+    );
+    if (session.brief && !entry?.reviewed) {
+      setToast({
+        message: "请先到班级反馈页核对这位学生的正文，再复制。",
+        error: true,
+      });
+      return;
+    }
     const text = formatStudentFeedback(session, target, group?.name);
     try {
       await copyFeedbackText(text);
@@ -400,18 +434,22 @@ export default function App() {
       </div>
     );
   }
-  function persist(next: AppData, message: string, recovery = false) {
-    if (storageError && !recovery) {
+  async function persist(next: AppData, message: string) {
+    if (!ready || storageError) {
       setToast({
-        message: "请先处理本地数据读取问题，避免覆盖原有数据。",
+        message: "请先连接本地数据库，再保存数据。",
         error: true,
       });
       return false;
     }
+    if (savingLock.current) return false;
+    savingLock.current = true;
+    setSaving(true);
     try {
-      saveData(next);
-      setData(next);
-      setStorageError(null);
+      const saved = await putWorkspace(next, revision.current);
+      revision.current = saved.revision;
+      setData(saved.data);
+      setConflict(false);
       setSavedAt(
         new Date().toLocaleTimeString("zh-CN", {
           hour: "2-digit",
@@ -421,6 +459,7 @@ export default function App() {
       setToast({ message });
       return true;
     } catch (error) {
+      if (error instanceof ApiError && error.status === 409) setConflict(true);
       setToast({
         message:
           error instanceof Error
@@ -429,9 +468,12 @@ export default function App() {
         error: true,
       });
       return false;
+    } finally {
+      savingLock.current = false;
+      setSaving(false);
     }
   }
-  function saveStudent(fields: StudentFields, editing?: Student) {
+  async function saveStudent(fields: StudentFields, editing?: Student) {
     const now = new Date().toISOString();
     const updated: Student = editing
       ? { ...editing, ...fields, updatedAt: now }
@@ -444,7 +486,7 @@ export default function App() {
           updatedAt: now,
         };
     if (
-      persist(
+      await persist(
         {
           ...data,
           students: editing
@@ -456,7 +498,7 @@ export default function App() {
     )
       setModal(null);
   }
-  function saveClass(
+  async function saveClass(
     fields: Pick<ClassGroup, "name" | "grade" | "schedule" | "notes">,
     editing?: ClassGroup,
   ) {
@@ -481,7 +523,7 @@ export default function App() {
           createdAt: new Date().toISOString(),
         };
     if (
-      persist(
+      await persist(
         {
           ...data,
           classes: editing
@@ -495,7 +537,7 @@ export default function App() {
       if (!editing) navigate({ module: route.module, classId: updated.id });
     }
   }
-  function importStudents(fields: StudentFields[]) {
+  async function importStudents(fields: StudentFields[]) {
     const now = new Date().toISOString();
     const additions = fields.map((values) => ({
       ...values,
@@ -506,7 +548,7 @@ export default function App() {
       updatedAt: now,
     }));
     if (
-      persist(
+      await persist(
         { ...data, students: [...data.students, ...additions] },
         `成功录入 ${additions.length} 位学生`,
       )
@@ -520,9 +562,9 @@ export default function App() {
         "该学生的个人信息、课程反馈和教学记录会一并删除。此操作无法撤销，建议先导出数据备份。",
       label: "确认删除",
       danger: true,
-      action: () => {
+      action: async () => {
         if (
-          persist(
+          await persist(
             {
               ...data,
               students: data.students.filter((s) => s.id !== target.id),
@@ -551,9 +593,9 @@ export default function App() {
       message: `班级内 ${ids.size} 位学生、课程反馈及教学记录会一并删除。此操作无法撤销，建议先导出数据备份。`,
       label: "删除班级及学生",
       danger: true,
-      action: () => {
+      action: async () => {
         if (
-          persist(
+          await persist(
             {
               ...data,
               classes: data.classes.filter((c) => c.id !== target.id),
@@ -574,6 +616,13 @@ export default function App() {
     });
   }
   function exportBackup() {
+    if (!ready) {
+      setToast({
+        message: "数据库尚未连接，暂时无法导出当前资料。",
+        error: true,
+      });
+      return;
+    }
     download(
       JSON.stringify(data, null, 2),
       `nookmi-backup-${localDate()}.json`,
@@ -591,10 +640,11 @@ export default function App() {
         title: "恢复这份数据备份？",
         message: `备份包含 ${restored.classes.length} 个班级、${restored.students.length} 位学生、${restored.feedbackSessions?.length ?? 0} 次课程反馈、${restored.records.length} 条教学记录。恢复将替换当前所有模块的数据；建议先导出现有备份。`,
         label: "确认替换并恢复",
-        action: () => {
-          if (persist(restored, "数据备份已恢复", true)) {
+        action: async () => {
+          if (await persist(restored, "数据备份已恢复")) {
             setConfirmation(null);
             feedbackDirty.current = false;
+            setWorkspaceEpoch((value) => value + 1);
             navigate({ module: "one-to-one" });
           }
         },
@@ -612,6 +662,34 @@ export default function App() {
     setNoteDate(localDate());
     setNoteContent("");
     setModal({ kind: "note" });
+  }
+  function reloadDatabase() {
+    const reload = () => {
+      feedbackDirty.current = false;
+      setConfirmation(null);
+      setModal(null);
+      setReloadAttempt((value) => value + 1);
+    };
+    if (feedbackDirty.current) {
+      setConfirmation({
+        title: "重新读取数据库？",
+        message:
+          "当前编辑区还有未保存的内容，请先复制留存。继续会放弃这些修改，读取数据库中的最新记录。",
+        label: "放弃修改并重新读取",
+        action: reload,
+      });
+    } else reload();
+  }
+  async function migrateLegacy() {
+    if (legacy.error || !isEmpty) return;
+    if (
+      await persist(
+        legacy.data,
+        "旧版学生资料和反馈已迁移到 SQLite，浏览器原始副本仍然保留。",
+      )
+    ) {
+      setShowMigration(false);
+    }
   }
   function studentTable() {
     return (
@@ -737,7 +815,8 @@ export default function App() {
                               session.entries.some(
                                 (entry) =>
                                   entry.studentId === s.id &&
-                                  entry.content.trim(),
+                                  (entry.content.trim() ||
+                                    hasObservations(entry.observations)),
                               ),
                             ).length
                           }{" "}
@@ -762,7 +841,7 @@ export default function App() {
                 : ""}
               <span>
                 <ShieldCheck size={13} />
-                数据保存在当前浏览器
+                数据保存在本机 SQLite 数据库
               </span>
             </div>
           </>
@@ -864,6 +943,18 @@ export default function App() {
             <span>ONE STUDENT AT A TIME</span>
           </div>
           <button
+            className="backup-nav"
+            onClick={() => {
+              setModal({ kind: "ai" });
+              setSidebarOpen(false);
+            }}
+            disabled={!ready}
+          >
+            <Sparkles size={18} />
+            <span>AI 服务设置</span>
+            <Settings2 size={16} />
+          </button>
+          <button
             className="nav-item backup-nav"
             onClick={() => {
               setModal({ kind: "backup" });
@@ -922,71 +1013,92 @@ export default function App() {
             </span>
             <span className="subject-pill">
               <span />
-              数学教学
+              教学反馈
             </span>
           </div>
         </header>
         <main>
-          {storageError ? (
+          {ready && conflict && (
+            <div className="workspace-notice" role="alert">
+              <div>
+                <strong>数据库中有更新的资料</strong>
+                <p>
+                  为避免覆盖其他页面的修改，本次尚未保存。请先复制留存当前未保存内容，再读取最新资料。
+                </p>
+              </div>
+              <button
+                className="button button-secondary"
+                onClick={reloadDatabase}
+              >
+                重新读取数据库
+              </button>
+            </div>
+          )}
+          {ready &&
+            showMigration &&
+            isEmpty &&
+            (legacy.data.students.length > 0 ||
+              legacy.data.classes.length > 0 ||
+              legacy.error) && (
+              <div className="workspace-notice">
+                <div>
+                  <strong>发现旧版浏览器资料</strong>
+                  <p>
+                    {legacy.error ||
+                      `旧版有 ${legacy.data.students.length} 位学生、${legacy.data.classes.length} 个班级，可迁移到本机数据库。原始浏览器副本会保留。`}
+                  </p>
+                </div>
+                <div className="button-row">
+                  {!legacy.error && (
+                    <button
+                      className="button button-primary"
+                      onClick={() => void migrateLegacy()}
+                    >
+                      迁移旧版资料
+                    </button>
+                  )}
+                  <button
+                    className="button button-secondary"
+                    onClick={() => {
+                      try {
+                        download(
+                          localStorage.getItem("nookmi:data:v1") || "",
+                          `nookmi-legacy-${localDate()}.json`,
+                        );
+                      } catch {
+                        setToast({
+                          message: "浏览器不允许读取旧资料。",
+                          error: true,
+                        });
+                      }
+                    }}
+                  >
+                    下载旧版副本
+                  </button>
+                  <button
+                    className="button button-ghost"
+                    onClick={() => setShowMigration(false)}
+                  >
+                    暂不迁移
+                  </button>
+                </div>
+              </div>
+            )}
+          {!ready ? (
             <section className="content-card recovery-card">
               <Database size={36} />
-              <h1>本地数据需要处理</h1>
-              <p>{storageError}</p>
-              <p>原始数据已保留。可以先下载原始内容，或恢复一份有效备份。</p>
+              <h1>{storageError ? "请连接本地后端" : "正在打开教学工作台…"}</h1>
+              <p>{storageError || "正在读取 SQLite 中的学生资料与反馈。"}</p>
+              <p>
+                在项目目录运行 <code>npm run start</code>，会同时启动前端与
+                Python 后端。
+              </p>
               <div className="button-row">
                 <button
-                  className="button button-secondary"
-                  onClick={() => {
-                    try {
-                      download(
-                        localStorage.getItem("nookmi:data:v1") || "",
-                        `nookmi-recovery-${localDate()}.txt`,
-                        "text/plain",
-                      );
-                    } catch {
-                      setToast({
-                        message: "浏览器不允许读取本地存储。",
-                        error: true,
-                      });
-                    }
-                  }}
-                >
-                  下载原始数据
-                </button>
-                <button
                   className="button button-primary"
-                  onClick={() => backupInput.current?.click()}
+                  onClick={() => setReloadAttempt((value) => value + 1)}
                 >
-                  恢复备份
-                </button>
-                <button
-                  className="button button-ghost danger-text"
-                  onClick={() =>
-                    setConfirmation({
-                      title: "清空无法读取的本地数据？",
-                      message:
-                        "这将覆盖原始数据。请先下载原始数据，保留恢复机会。",
-                      label: "清空并重新开始",
-                      danger: true,
-                      action: () => {
-                        if (
-                          persist(
-                            {
-                              ...EMPTY_DATA,
-                              students: [],
-                              classes: [],
-                              records: [],
-                            },
-                            "已重新开始",
-                            true,
-                          )
-                        )
-                          setConfirmation(null);
-                      },
-                    })
-                  }
-                >
-                  重新开始
+                  重新连接
                 </button>
               </div>
             </section>
@@ -1047,13 +1159,14 @@ export default function App() {
               {activePanel === "feedback" ? (
                 student.module === "one-to-one" ? (
                   <FeedbackWorkspace
-                    key={`student-${student.id}`}
+                    key={`student-${student.id}-${reloadAttempt}-${workspaceEpoch}`}
                     module={student.module}
                     students={[student]}
                     studentId={student.id}
                     classId={null}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    onConfigureAI={() => setModal({ kind: "ai" })}
                     onDirtyChange={markFeedbackDirty}
                   />
                 ) : (
@@ -1085,24 +1198,34 @@ export default function App() {
                             <div className="note-top">
                               <span>
                                 <Clock3 size={15} />
-                                {formatLessonAt(session.lessonAt)}
+                                {formatFeedbackPeriod(session)}
                               </span>
                               <button
                                 className="button button-secondary button-sm"
+                                disabled={Boolean(
+                                  session.brief &&
+                                    !session.entries.find(
+                                      (entry) => entry.studentId === student.id,
+                                    )?.reviewed,
+                                )}
                                 onClick={() =>
                                   void copyPersonalFeedback(session, student)
                                 }
                               >
                                 <Copy size={14} />
-                                复制反馈
+                                {session.brief &&
+                                !session.entries.find(
+                                  (entry) => entry.studentId === student.id,
+                                )?.reviewed
+                                  ? "待核对"
+                                  : "复制反馈"}
                               </button>
                             </div>
                             <p>
-                              {
-                                session.entries.find(
-                                  (entry) => entry.studentId === student.id,
-                                )?.content
-                              }
+                              {session.entries.find(
+                                (entry) => entry.studentId === student.id,
+                              )?.content ||
+                                "已记录个人情况，反馈正文待生成。可在班级反馈工作台继续补充。"}
                             </p>
                           </article>
                         ))}
@@ -1194,9 +1317,9 @@ export default function App() {
                                     message: "删除后无法撤销。",
                                     danger: true,
                                     label: "删除记录",
-                                    action: () => {
+                                    action: async () => {
                                       if (
-                                        persist(
+                                        await persist(
                                           {
                                             ...data,
                                             records: data.records.filter(
@@ -1336,7 +1459,7 @@ export default function App() {
               {group && activePanel === "feedback" ? (
                 listedStudents.length ? (
                   <FeedbackWorkspace
-                    key={`class-${group.id}`}
+                    key={`class-${group.id}-${reloadAttempt}-${workspaceEpoch}`}
                     module={group.module}
                     students={listedStudents}
                     studentId={null}
@@ -1344,6 +1467,7 @@ export default function App() {
                     className={group.name}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    onConfigureAI={() => setModal({ kind: "ai" })}
                     onDirtyChange={markFeedbackDirty}
                   />
                 ) : (
@@ -1499,9 +1623,9 @@ export default function App() {
                     <span>想先熟悉一下？用虚构示例体验完整工作流程。</span>
                   </div>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       if (
-                        persist(
+                        await persist(
                           createDemoData(),
                           "已载入虚构示例，可在「数据与备份」中清空。",
                         )
@@ -1518,7 +1642,9 @@ export default function App() {
           <footer className="main-footer">
             <span>
               <span className="online-dot" />
-              {savedAt ? `已保存 · ${savedAt}` : "本地存储 · 建议定期备份"}
+              {savedAt
+                ? `已保存到 SQLite · ${savedAt}`
+                : "本机 SQLite 数据库 · 建议定期备份"}
             </span>
             <span>
               Nookmi <span className="footer-dot">·</span> 留心每一次成长
@@ -1589,11 +1715,11 @@ export default function App() {
           onClose={() => setModal(null)}
         >
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               if (!noteContent.trim() || !noteDate) return;
               if (
-                persist(
+                await persist(
                   {
                     ...data,
                     records: [
@@ -1663,7 +1789,9 @@ export default function App() {
           <div className="backup-notice">
             <ShieldCheck size={23} />
             <p>
-              数据仅保存在当前设备的当前浏览器中。更换浏览器、清理网站数据后不会自动恢复。请定期导出备份。
+              学生资料、简短记录和反馈保存在项目的
+              .local/nookmi.sqlite3。连接同一个本地后端的浏览器共用这份数据。请定期导出备份；AI
+              密钥不会进入备份。
             </p>
           </div>
           <div className="backup-summary">
@@ -1680,7 +1808,11 @@ export default function App() {
               <strong>{feedbackSessions.length}</strong>次课程反馈
             </span>
           </div>
-          <button className="backup-option" onClick={exportBackup}>
+          <button
+            className="backup-option"
+            onClick={exportBackup}
+            disabled={!ready}
+          >
             <span className="stat-icon tone-green">
               <ArrowDownToLine size={22} />
             </span>
@@ -1690,8 +1822,40 @@ export default function App() {
             </span>
             <ChevronRight size={18} />
           </button>
+          {(legacy.data.students.length > 0 ||
+            legacy.data.classes.length > 0) && (
+            <button
+              className="backup-option"
+              onClick={() =>
+                download(
+                  JSON.stringify(legacy.data, null, 2),
+                  `nookmi-legacy-${localDate()}.json`,
+                )
+              }
+            >
+              <span className="stat-icon tone-green">
+                <Database size={22} />
+              </span>
+              <span>
+                <strong>下载旧版浏览器副本</strong>
+                <small>保留更新前的数据，需要时通过备份恢复</small>
+              </span>
+              <ChevronRight size={18} />
+            </button>
+          )}
+          <button className="backup-option" onClick={reloadDatabase}>
+            <span className="stat-icon tone-green">
+              <Database size={22} />
+            </span>
+            <span>
+              <strong>重新读取数据库</strong>
+              <small>读取其他页面已保存的最新资料</small>
+            </span>
+            <ChevronRight size={18} />
+          </button>
           <button
             className="backup-option"
+            disabled={!ready}
             onClick={() => backupInput.current?.click()}
           >
             <span className="stat-icon tone-purple">
@@ -1707,6 +1871,7 @@ export default function App() {
             <span>需要从头开始？</span>
             <button
               className="button button-ghost danger-text button-sm"
+              disabled={!ready}
               onClick={() => {
                 setModal(null);
                 setConfirmation({
@@ -1715,9 +1880,9 @@ export default function App() {
                     "这会删除三个模块的全部班级、学生、课程反馈和教学记录，无法撤销。请确认已保存需要的备份。",
                   label: "清空全部数据",
                   danger: true,
-                  action: () => {
+                  action: async () => {
                     if (
-                      persist(
+                      await persist(
                         {
                           schemaVersion: 1,
                           classes: [],
@@ -1729,6 +1894,7 @@ export default function App() {
                     ) {
                       setConfirmation(null);
                       feedbackDirty.current = false;
+                      setWorkspaceEpoch((value) => value + 1);
                       navigate({ module: "one-to-one" });
                     }
                   },
@@ -1740,6 +1906,7 @@ export default function App() {
           </div>
         </Modal>
       )}
+      {modal?.kind === "ai" && <AISettings onClose={() => setModal(null)} />}
       {confirmation && (
         <Modal title={confirmation.title} onClose={() => setConfirmation(null)}>
           <p className="confirm-message">{confirmation.message}</p>
@@ -1794,6 +1961,11 @@ export default function App() {
           <button aria-label="关闭提示" onClick={() => setToast(null)}>
             <X size={14} />
           </button>
+        </div>
+      )}
+      {saving && (
+        <div className="saving-shield" role="status" aria-live="polite">
+          <div>正在保存到本机数据库…</div>
         </div>
       )}
     </div>

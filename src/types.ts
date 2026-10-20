@@ -38,6 +38,29 @@ export interface TeachingNote {
 export interface FeedbackEntry {
   studentId: string;
   content: string;
+  observations?: StudentObservations;
+  reviewed?: boolean;
+  generationSource?: "ai" | "manual" | "outline";
+  generatedFrom?: string;
+}
+
+export interface StudentObservations {
+  performance: string;
+  strengths: string;
+  difficulties: string;
+  plan: string;
+  tasks: string;
+  subjects: Record<string, string>;
+}
+
+export interface FeedbackBrief {
+  periodStart: string;
+  periodEnd: string;
+  subjects: string[];
+  teachingContent: string;
+  commonTasks: string;
+  focus: string;
+  length: "brief" | "standard";
 }
 
 export interface FeedbackSession {
@@ -47,6 +70,7 @@ export interface FeedbackSession {
   studentId: string | null;
   lessonAt: string;
   entries: FeedbackEntry[];
+  brief?: FeedbackBrief;
   createdAt: string;
   updatedAt: string;
 }
