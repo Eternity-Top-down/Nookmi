@@ -12,7 +12,7 @@ describe("personal style reference card", () => {
     expect(html).toContain("个人风格参考");
     expect(html).toContain(`${label}风格参考`);
     expect(html).toContain("已用内置范文");
-    expect(html).toContain("这里可选补充自己的范文");
+    expect(html).toContain("优先采用你的结构、语气、篇幅和图标习惯");
     expect(html).toContain("留空也可使用内置标准生成");
     expect(html).not.toMatch(/<textarea[^>]*\brequired\b/i);
     expect(html).toContain("三个模块分别保存");
@@ -24,7 +24,7 @@ describe("personal style reference card", () => {
 
   it("shows a saved reference, text count, and read-only controls when disabled", () => {
     const html = renderToStaticMarkup(<FeedbackStyleReference module="course" value="参考范文" disabled onSave={async () => true} />);
-    expect(html).toContain("有参考");
+    expect(html).toContain("优先用我的风格");
     expect(html).toContain("4 / 12000 字");
     expect(html).toMatch(/<textarea[^>]*readOnly=""/i);
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[\s\S]*?保存风格参考<\/button>/);

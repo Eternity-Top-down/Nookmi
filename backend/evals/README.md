@@ -1,6 +1,6 @@
 # 反馈质量回归
 
-这里的资料与学生数据库完全独立。前五例由未被内置范文采用的用户作品匿名逆向提炼，后三例为虚构边界情形；这些输入不代表教师当时的原始短记录，因此只能用于首轮校准，不能据此证明真实填写时间下降。
+这里的资料与学生数据库完全独立。前五例由未被内置范文采用的用户作品匿名逆向提炼，随后三例为虚构边界情形、四例为虚构个人风格案例，最后一例仅改变第一例日期以检查图标搭配，共 13 例。这些输入不代表教师当时的原始短记录，因此只能用于首轮校准，不能据此证明真实填写时间下降。风格案例中的示例称呼、成绩和课程也是构造数据，用于检查模型是否错误地把旧范文事实迁入当前反馈。
 
 默认只检查请求格式并构建当前提示词，不读取 AI 设置、不联网：
 
@@ -13,6 +13,16 @@
 ```powershell
 .venv\Scripts\python.exe backend/evals/evaluate_feedback.py --run --case one-to-one-recursion --case evening-uncertain --case course-classroom-balance
 ```
+
+检查个人风格优先时，可选以下四例，分别覆盖一对一自然段无图标、晚辅简短分点、班课自定义标题和一对一两个图标标题。它们用于观察是否遵循个人结构和篇幅，不能靠检查出现了某个标题就自动宣布风格达标：
+
+```powershell
+.venv\Scripts\python.exe backend/evals/evaluate_feedback.py --run --case style-one-to-one-prose --case style-evening-short-points --case style-course-custom-headings --case style-one-to-one-two-icons
+```
+
+核对时同时检查：没有强加默认四板块或图标，没有复制示例姓名、成绩和旧知识点；当前记录中的事实、掌握层次与未来计划仍准确保留。没有课程或作业记录时，不因个人范文出现相应部分而填造内容。
+
+`default-one-to-one-icon-variation` 与 `one-to-one-recursion` 只有日期不同（10月5日与10月4日），用于对照默认一对一标题的图标搭配。两例应保持标题含义和教学事实，不因日期变化新增课次、进步或学习内容；这是合成的日期变化测试，并非两次真实课程记录。运行时可用两个 `--case` 一起选择，已有同版本10月4日报告时也可只生成新增日期例。
 
 `--case` 可以重复指定；`--limit N` 进一步限制案例数量，不是 API 请求数量。配置默认从 `NOOKMI_DATA_DIR` 或项目 `.local` 读取，也可指定 `--settings-dir`。脚本不会修改设置或学生资料，不输出服务地址和密钥，不读取真实学生档案或已保存的个人范文。
 
