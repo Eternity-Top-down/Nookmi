@@ -19,6 +19,25 @@
 
 `--cases-file` 选择固定输入文件；`--case` 和 `--module` 取交集，再应用 `--limit`。选择为空、ID 无效或请求校验失败时，在读取模型设置前退出。
 
+## v0.11.0 题型理解与训练建议案例
+
+`targeted_advice_cases.json` 包含 9 条固定模拟短记录，独立于真实学生资料。前 6 条用于校准，每模块 2 条，依次覆盖因式分解方法选择、交点坐标还原、串并联换画法、模糊的数学困难、基本不等式构造及只有聊天观察；最后 3 条最初作为预留案例，分别检查漏根、教师已有计划和取等可行性。
+
+本轮建议要求聚焦孩子怎样理解题型、在卡住时独立作出下一步判断。核对时关注：建议是否从已经会的地方接上，是否有与该题型对应的思考动作和练法，必要知识是否直接帮助推进；不能因为知识点多、公式多、步骤长就判为高价值。只有模糊情况或行为记录时，不强塞题型训练；已有教师安排不叠加一套计划。固定用例中的知识核对点用于检查准确性，不要求模型把每项都写进给家长的反馈，也不要求固定三个小标题。
+
+```powershell
+# 校验全部 9 例，不读取设置、不联网
+.venv\Scripts\python.exe backend/evals/evaluate_feedback.py --cases-file backend/evals/targeted_advice_cases.json
+# 运行前 6 条校准例，三模块各 2 条
+.venv\Scripts\python.exe backend/evals/evaluate_feedback.py --run --cases-file backend/evals/targeted_advice_cases.json --limit 6 --output-dir .local/evals/targeted-advice-calibration
+# 单独运行最初预留的 3 条，保留独立报告
+.venv\Scripts\python.exe backend/evals/evaluate_feedback.py --run --cases-file backend/evals/targeted_advice_cases.json --case holdout-targeted-one-to-one-lost-root --case holdout-targeted-evening-existing-plan --case holdout-targeted-course-bound-attainment --output-dir .local/evals/targeted-advice-holdout
+```
+
+也可以加 `--module one-to-one`、`--module evening` 或 `--module course` 只看一个模块；与 `--limit 2` 合用时选择该模块的两条校准例。仅指定模块而不限制条数，会同时运行该模块最初预留的一条。
+
+这些固定案例现已用于多轮查看和对照，`holdout` 只是最初分组名称，不能将最终重测称为盲测。比较版本时保持输入不变，并为各轮指定不同的 `--output-dir`；保留中间输出和问题记录。规则测试通过、生成成功或建议看起来合理，都不能证明学生照做后已经提高，也不能替代教师试用。
+
 需要真实生成时显式添加 `--run`，脚本会使用工作台已有的兼容 OpenAI 配置，可能产生服务费用。下面三个案例分别覆盖一对一、晚辅和班课：
 
 ```powershell

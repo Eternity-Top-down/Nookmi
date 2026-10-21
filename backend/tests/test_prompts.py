@@ -2,9 +2,11 @@
 from copy import deepcopy
 import json
 import unittest
+from unittest.mock import patch
 
 from backend.app.schemas import GenerateRequest
 from backend.app.services.feedback_standards import MODULE_EXAMPLES
+from backend.app.services.learning_advice import LEARNING_ADVICE_GUIDANCE
 from backend.app.services.sparse_examples import SPARSE_EXAMPLES
 from backend.app.services.prompts import build_messages
 from backend.app.services.prompts import build_review_messages
@@ -27,6 +29,45 @@ def request(module="one-to-one", *, length="standard", style="", notes="能提�
 
 
 class WritingStandardsTests(unittest.TestCase):
+    def test_learning_advice_contract_stays_in_system_without_changing_facts_or_style(self):
+        style_reference = "本次观察：旧例中孩子能独立解题。下一步：围绕具体错题简短说明。"
+        candidate = "待复核初稿：建议每天另外完成十道训练题。"
+        for module in MODULE_EXAMPLES:
+            for length in ("standard", "brief"):
+                for style in ("", style_reference):
+                    with self.subTest(module=module, length=length, custom_style=bool(style)):
+                        current = request(module, length=length, style=style)
+                        current.observations.tasks = "订正讲义中自己做错的题"
+                        before = current.model_dump()
+                        draft = build_messages(current)
+                        reviewed = build_review_messages(current, candidate)
+                        # Adding the advice contract must not add user facts,
+                        # replace the chosen style, or alter example messages.
+                        with patch("backend.app.services.prompts.LEARNING_ADVICE_GUIDANCE", ""):
+                            without_contract = build_messages(current)
+                            review_without_contract = build_review_messages(current, candidate)
+                        self.assertEqual(draft[1:], without_contract[1:])
+                        self.assertEqual(reviewed[1:], review_without_contract[1:])
+                        for messages in (draft, reviewed):
+                            self.assertEqual(messages[0]["content"].count(LEARNING_ADVICE_GUIDANCE), 1)
+                            self.assertEqual(messages[-1], draft[-1])
+                            facts = json.loads(messages[-1]["content"].split("\n", 1)[1])
+                            course_key = "本次课程信息" if module == "one-to-one" else "共用课程信息"
+                            expected_brief = dict(before["brief"])
+                            if module == "one-to-one":
+                                expected_brief.pop("commonTasks")
+                            self.assertEqual(facts, {
+                                "年级": before["grade"],
+                                course_key: expected_brief,
+                                "这位学生的实际观察": before["observations"],
+                            })
+                            self.assertNotIn("十道训练题", messages[-1]["content"])
+                        self.assertEqual(current.model_dump(), before)
+                        if style:
+                            self.assertFalse(any(message["role"] == "assistant" for message in draft))
+                            self.assertEqual(draft[-2], reviewed[-2])
+                            self.assertEqual(json.loads(draft[-2]["content"].split("\n", 1)[1]), {"风格参考": style})
+
     def test_only_current_module_examples_precede_actual_facts(self):
         for module in MODULE_EXAMPLES:
             with self.subTest(module=module):

@@ -1,0 +1,325 @@
+{
+  "version": 1,
+  "name": "精准学科建议：题型训练、知识复习与信息边界",
+  "sourceNote": "本组9例直接模拟教师日常短记录，均为独立虚构匿名资料，未读取真实学生数据库或个人范文，也未从成熟反馈成稿反推。前6例为校准案例，每模块2例；最后3例以holdout前缀标记，每模块1例，供调整后检查。案例不提供标准成稿，核对要点允许多种合理教学路径。生成内容贴切不等于已经证明学生执行后的学习效果。",
+  "rubric": [
+    "事实与掌握层次：保留当前观察、已会环节和提示程度，不从共用课程或建议反推新的学生问题、错误原因或课堂活动。",
+    "复习对象明确：具体题型与卡点已知时，建议应指出有关概念、性质、公式的适用条件或方法，不仅说多练、复盘第一步、巩固基础。",
+    "训练过程对应：说明怎样用所复习内容解决该类题，可以有简短的练习顺序或对比方法；不能把所有学生套入同一清单。",
+    "掌握检查可观察：适合时说明可以通过怎样的独立作答、解释或变式表现检查是否掌握，不虚构测试结果、达标率或保证效果。",
+    "学科正确且适量：不混淆定理条件与特定解法构造，不遗漏关键限制；给出与记录相关的路径，不在缺少题目时断言唯一解法或隐藏错因。",
+    "输入边界：只有模糊整体判断或行为观察时，不编造具体薄弱知识点；教师已有具体计划时优先整理，不为了完整训练结构叠加大量安排。",
+    "建议与任务分开：方法明确属于可尝试的后续建议，不冒充已布置作业，不新增题号、页码、固定题量、期限、打卡或教师承诺。",
+    "表达与采用成本：保留原有模块及个人风格，不强制复习、训练、自查三小标题；逐条记录需要改的事实、学科表述、空泛内容或过量建议。"
+  ],
+  "cases": [
+    {
+      "id": "targeted-one-to-one-factor-choice",
+      "label": "一对一：公式法会用，因式分解法不会选择",
+      "sourceKind": "simulated_targeted_advice_calibration",
+      "request": {
+        "module": "one-to-one",
+        "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": ["数学"],
+          "teachingContent": "一元二次方程：公式法与因式分解法",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "公式法能做，也能移成右边为0；能分解的题还是只会套公式，不会选因式分解法",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留公式法会用、能整理到一边为零、方法选择不熟，不改成公式不会或移项不会，也不断言学生完全不会因式分解。",
+        "建议应指出因式分解法相关的复习对象，例如提公因式、乘法公式的逆用或乘积为零时因子为零；不要求所有方法都列出。",
+        "训练应涉及观察方程结构、辨认能否方便分解、再列出各因子为零求解，可与公式法对比选择，不能只说多练公式法。",
+        "不能把直接除以含未知数因子当作等价变形；也不能声称所有一元二次方程都应优先用整数因式分解。",
+        "可以用能否独立选方法并解释选择理由作为检查，不声称该训练一定能提分，不新增作业题数期限。"
+      ]
+    },
+    {
+      "id": "targeted-one-to-one-intersection-coordinates",
+      "label": "一对一：能联立，但不会把方程解还原成交点",
+      "sourceKind": "simulated_targeted_advice_calibration",
+      "request": {
+        "module": "one-to-one",
+        "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": ["数学"],
+          "teachingContent": "二次函数与一次函数图像的交点",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "抛物线顶点会找，求与直线交点时能联立，解出x后不会对应回交点坐标",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留顶点会找、会联立且已经解出x，困难是把横坐标还原为完整交点；不误诊为解方程困难或不会联立。",
+        "建议可复习图像上点的坐标满足解析式、交点同时满足两个解析式，以及横纵坐标配对关系。",
+        "训练应贴近把每个实数x解分别代回原解析式求y、写成坐标并核对，而不是只建议比较图像或背顶点公式。",
+        "不同x解对应的y须分别求出，不能交叉配对；交点应满足两个函数解析式。没有给出具体方程，不能编造交点数或坐标。",
+        "不为已会的顶点计算另加一套训练；可建议检查独立完成从方程实根到坐标的对应，不新增真实课后任务。"
+      ]
+    },
+    {
+      "id": "targeted-evening-circuit-redraw",
+      "label": "晚辅：简单电路会判断，换画法就混淆",
+      "sourceKind": "simulated_targeted_advice_calibration",
+      "request": {
+        "module": "evening",
+        "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": ["数学", "物理", "化学"],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "物理串并联简单图能分，导线绕一下就分不清，老师指出节点后能看懂",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "只评价物理，保留简单图会分及提示节点后看懂，不能改成所有电路都不会或已独立掌握复杂电路。",
+        "建议可复习串联与并联的连接关系、支路或节点的含义，判断依据应是电路连接方式而非图形外观。",
+        "训练应涉及标记连接节点、沿电流路径辨认分支或把绕线图重画为易读图，并与原图核对连接关系；不只写多看电路图。",
+        "重画必须保持实际连接关系，不能把看起来相交的导线一律当成连接；也不能把任意多个元件相连都说成并联。",
+        "输入未涉及电表、电阻计算或故障，勿把这些内容当成学生的薄弱点；无须凭空布置它们的完整训练。"
+      ]
+    },
+    {
+      "id": "targeted-evening-vague-math",
+      "label": "晚辅：只有数学弱，不能虚构具体薄弱题型",
+      "sourceKind": "simulated_targeted_advice_calibration",
+      "request": {
+        "module": "evening",
+        "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": ["数学", "物理"],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "数学基础弱，今天作业觉得难，具体卡在哪些题上还说不清",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "可以保留教师给出的数学基础弱和今天作业觉得难，不扩大为不愿思考、懒惰、长期畏难或所有科目都差。",
+        "不能因为年级推断勾股定理、函数或计算是实际薄弱点，也不能借用范文中的知识点填补。",
+        "建议可以先让孩子指出作业中开始不会的地方、尝试解释题意或展示已做步骤，帮助定位需要复习的内容；此时不强求详细题型训练方案。",
+        "不要求教师为生成反馈再补齐一套评价表；反馈中也不写材料不足、无法生成等审核说明。",
+        "不补物理表现，不虚构作业数量期限；没有具体题型时宁可给短而可操作的定位步骤。"
+      ]
+    },
+    {
+      "id": "targeted-course-amgm-construction",
+      "label": "班课：会直接用基本不等式，不会构造形式",
+      "sourceKind": "simulated_targeted_advice_calibration",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": ["数学"],
+          "teachingContent": "基本不等式求最值",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "能背基本不等式，直接套的题会做；式子要先拆项或配凑时就不知道从哪下手",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留会背及会直接应用，困难只定位到拆项、配凑等构造，不改成概念完全不会或基本题也不能做。",
+        "建议应有具体复习对象，如基本不等式的形式、适用条件、取等条件与常见等价变形；不能只是回看第一步或多练。",
+        "训练可以从已讲过的典型构造中对比原式与目标形式，说明拆项或配凑的目的，再尝试结构接近的变式；不要求唯一方法或列出所有技巧。",
+        "不能把和或积为定值列成基本不等式本身的通用使用条件；不能断言每道最值题都必须用某种定值构造。",
+        "若谈最值，须注意得到界与能否取到该界的区别；没有具体式子时不能凭空选定唯一拆项方案或给出数值答案。",
+        "只建议合理的训练方向，不把未写出的课堂步骤当成已经讲解，不增加作业页码、题量和期限。"
+      ]
+    },
+    {
+      "id": "targeted-course-behavior-only",
+      "label": "班课：只有聊天观察，不应制造知识训练计划",
+      "sourceKind": "simulated_targeted_advice_calibration",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": ["数学"],
+          "teachingContent": "集合运算、充分条件和必要条件",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "这节有一阵和同学聊天，提醒后能继续听，练习完成情况没看",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留本节一阵聊天与提醒后继续听，不扩大为整月纪律差或不愿学习。",
+        "共用教学内容可以概述，但没有个人掌握观察，不能认定集合运算或充分必要条件薄弱，也不能默认基础扎实。",
+        "不为了复习、训练、自查结构追加知识训练清单；可以只有简短的课堂专注建议。",
+        "教师没看练习不等于孩子没做、做错或完成质量差；不给家长写记录为空等审核用语。",
+        "不建议做完一小段就聊天，不增加定时打卡、固定监督时长或已布置的任务。"
+      ]
+    },
+    {
+      "id": "holdout-targeted-one-to-one-lost-root",
+      "label": "预留一对一：直接约去含未知数因子导致漏根",
+      "sourceKind": "simulated_targeted_advice_holdout",
+      "request": {
+        "module": "one-to-one",
+        "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": ["数学"],
+          "teachingContent": "因式分解法解一元二次方程",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "提公因式会做，分解后把含x的因子直接约掉，漏了零根，提醒后能补",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留提公因式会做及提醒后补根，不改成不会因式分解，也不能声称已经独立避免漏根。",
+        "建议可复习积为零时至少一个因子为零，以及等式两边除以同一个式子必须先确认它不为零。",
+        "训练应对应分解后分别令各因子为零、汇总解，并核对是否遗漏，而不是只要求算完代回；代回已找到的根只能检查其是否成立，不能单独证明没有漏根。",
+        "不能让学生直接约去可能为零的因子；没有具体方程，不编造其他根、系数或解题结果。",
+        "可以建议独立解释为什么要保留各因子对应的解，不自行给出每日题数或新的确定作业。"
+      ]
+    },
+    {
+      "id": "holdout-targeted-evening-existing-plan",
+      "label": "预留晚辅：已有针对性安排，避免叠加一套训练",
+      "sourceKind": "simulated_targeted_advice_holdout",
+      "request": {
+        "module": "evening",
+        "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": ["数学", "物理"],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "数学坐标图能画对，去括号偶尔漏变号；准备先让孩子圈出括号前负号再算",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留坐标图能画对及偶尔漏变号，不给坐标图增加薄弱点，也不将偶尔写成频繁。",
+        "圈负号是尚未实施的教师计划，不能写成学生已经这样做或已有改善；应优先整理该安排。",
+        "可以简洁说明括号前负号影响括号内各项，帮助理解现有安排，但不叠加一整套无关的方程或坐标训练。",
+        "没有物理观察就不补物理评价；没有实际作业就不发明任务、次数或期限。",
+        "无需强行增加复习、训练、自查三个标题，避免把教师已经明确的简单做法写得繁琐。"
+      ]
+    },
+    {
+      "id": "holdout-targeted-course-bound-attainment",
+      "label": "预留班课：得到下界后忽略取等可行性",
+      "sourceKind": "simulated_targeted_advice_holdout",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": ["数学"],
+          "teachingContent": "基本不等式求最值",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "能用基本不等式写出下界，没看等号能否取到就当最小值，提醒后会代条件核对",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留能得到下界及提醒后会核对，不能改成基本不等式不会用或已经独立完成全部最值判断。",
+        "建议应明确复习基本不等式的取等条件，以及下界与能够达到的最小值的区别，而不是泛泛提醒认真检查。",
+        "训练可在写出不等式后单独列取等关系，再将所得变量值与题设约束、定义域逐项核对，判断是否存在可行取等值。",
+        "若该下界取不到，不能直接把它称为最小值，也不能据此断言原问题没有最小值；可能需要寻找更准确的界或使用其他方法。",
+        "没有具体式子，不编造取等时的数值、额外约束或唯一求解方法，也不把取等条件说成不等式成立的必要条件。",
+        "不虚构分数提升或训练效果，不新增固定作业量和完成日期。"
+      ]
+    }
+  ]
+}
