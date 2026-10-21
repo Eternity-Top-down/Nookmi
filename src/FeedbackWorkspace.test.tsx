@@ -106,13 +106,16 @@ describe("feedback workspace task fields", () => {
     expect(html).toContain("旧版已写好的反馈正文");
   });
 
-  it.each(["evening", "course"] as const)("preserves separate shared and individual task inputs for %s", (module) => {
+  it.each(["evening", "course"] as const)("keeps shared tasks visible and individual tasks available through supplements for %s", (module) => {
     const { session } = fixture(module, "全班统一完成练习", "这位同学补做订正");
-    const fields = taskInputs(render(module, session));
-    expect(fields).toHaveLength(2);
-    expect(fields.map(({ value }) => value)).toEqual(["全班统一完成练习", "这位同学补做订正"]);
+    const original = structuredClone(session);
+    const html = render(module, session);
+    const fields = taskInputs(html);
+    expect(fields).toHaveLength(1);
+    expect(fields[0].value).toBe("全班统一完成练习");
     expect(fields[0].label).toContain(module === "evening" ? "共同课后任务" : "全班安排");
-    expect(fields[1].label).toBe("个人任务");
+    expect(html).toContain('aria-label="测试学生的补充记录"');
+    expect(session).toEqual(original);
   });
 });
 
@@ -150,7 +153,7 @@ describe("focused feedback workspace", () => {
     const html = render(module);
     expect(html).not.toContain("AI 推荐记录");
     expect(html).not.toContain("feedback-suggestions");
-    expect(html).toContain("AI 生成反馈");
+    expect(html).toContain(module === "one-to-one" ? "AI 生成反馈" : "AI 批量生成");
     expect(html).toContain("立即保存");
   });
 });
@@ -206,7 +209,8 @@ describe("feedback workspace local draft recovery", () => {
     expect(labeledTextareas(html).find(({ label }) => label === "第二位同学的家长反馈正文")?.value).toBe("第二位尚未同步的家长反馈正文");
     expect(html).toContain("第一位的本机正文");
     expect(html).toContain('value="数学、 物理，"');
-    expect(html).toContain('aria-label="第二位同学的反馈工作区"');
+    expect(html).toContain('aria-label="第二位同学的反馈记录"');
+    expect(html).toContain('aria-label="第二位同学的反馈结果"');
     expect(html).not.toContain('aria-label="选择反馈学生"');
     expect(html).toContain("已恢复上次留在本机的反馈草稿");
     expect(html).not.toContain("数据库中的这份反馈已变更");
@@ -342,10 +346,9 @@ describe("simple student situation input", () => {
       .find((match) => match[2].includes("补充细节（选填）"));
   }
 
-  it.each(["one-to-one", "evening", "course"] as const)("offers a main observation field and starts empty optional details collapsed in %s", (module) => {
-    const html = render(module);
-    const label = module === "one-to-one" ? "课堂状态与掌握情况" : "学生情况";
-    const main = labeledTextareas(html).find((field) => field.label.startsWith(label));
+  it("offers a main observation field and starts empty one-to-one details collapsed", () => {
+    const html = render("one-to-one");
+    const main = labeledTextareas(html).find((field) => field.label.startsWith("课堂状态与掌握情况"));
     expect(main?.attributes).toContain('rows="4"');
     expect(main?.label).toContain("亮点、困难和建议可以写在一起");
     expect(main?.label).toContain("能独立做什么、卡在哪里、提示后怎样");
@@ -392,14 +395,23 @@ describe("simple student situation input", () => {
       studentId={module === "one-to-one" ? student.id : null}
       sessions={[session]} onSave={async () => true} onSaveStyle={async () => true}
     />);
-    const main = labeledTextareas(html).find((field) => field.label.startsWith(module === "one-to-one" ? "课堂状态与掌握情况" : "学生情况"));
-    expect(main?.attributes).toContain(subject);
-    expect(main?.attributes).toContain(response);
+    if (module === "one-to-one") {
+      const main = labeledTextareas(html).find((field) => field.label.startsWith("课堂状态与掌握情况"));
+      expect(main?.attributes).toContain(subject);
+      expect(main?.attributes).toContain(response);
+    } else {
+      const main = [...html.matchAll(/<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g)]
+        .find((match) => match[1].includes('aria-label="测试学生的学生情况"'));
+      expect(main).toBeDefined();
+      expect(main?.[1]).not.toContain("required");
+      expect(main?.[2]).toBe("能独立做基础题，变式需要提示");
+    }
     expect(html).toContain("已用内置范文");
     expect(html).toMatch(/<option value="standard" selected="">按范文完整展开<\/option>/);
     expect(html).toContain('<option value="brief">简短，抓住重点</option>');
     const button = [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)]
-      .find((match) => match[2].includes("AI 生成反馈"));
+      .find((match) => match[2].includes(module === "one-to-one" ? "AI 生成反馈" : "AI 批量生成"));
+    expect(button).toBeDefined();
     expect(button?.[1]).not.toContain("disabled");
   });
 
@@ -411,8 +423,10 @@ describe("simple student situation input", () => {
     const evening = fixture("evening");
     evening.session.entries[0].observations!.subjects = { 数学: "能独立列式", 物理: "受力方向需要提醒" };
     const eveningHtml = render("evening", evening.session);
-    expect(labeledTextareas(eveningHtml).filter((field) => ["数学", "物理"].includes(field.label)).map((field) => field.value))
+    expect([...eveningHtml.matchAll(/<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g)]
+      .filter((match) => /aria-label="测试学生的(?:数学|物理)记录"/.test(match[1])).map((match) => match[2]))
       .toEqual(["能独立列式", "受力方向需要提醒"]);
-    expect(optionalDetails(eveningHtml)?.[2]).not.toContain("受力方向需要提醒");
+    const table = /<table\b[^>]*>([\s\S]*?)<\/table>/.exec(eveningHtml)?.[1];
+    expect(table).toContain("受力方向需要提醒");
   });
 });

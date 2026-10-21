@@ -1,0 +1,179 @@
+.fb-roster-scroll {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  max-height: min(55vh, 680px);
+  overflow: auto;
+  isolation: isolate;
+  border: 1px solid var(--line, #dce5df);
+  border-radius: 10px 10px 0 0;
+  background: #fff;
+  scrollbar-gutter: stable;
+  scroll-padding-left: 136px;
+}
+.fb-roster-scroll:focus-visible { outline: 3px solid #92b9a4; outline-offset: 3px; }
+
+.fb-roster-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--text, #293a34);
+  font-size: 13px;
+}
+
+.fb-roster-student-col { width: 124px; }
+.fb-roster-extra-col { width: 108px; }
+.fb-roster-status-col { width: 136px; }
+
+.fb-roster-table th,
+.fb-roster-table td {
+  padding: 12px;
+  border-bottom: 1px solid #e6ece8;
+  border-right: 1px solid #e6ece8;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.fb-roster-table th:last-child,
+.fb-roster-table td:last-child { border-right: 0; }
+.fb-roster-table tbody tr:last-child > * { border-bottom: 0; }
+
+.fb-roster-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding-top: 13px;
+  padding-bottom: 13px;
+  background: #f1f6f3;
+  color: #4c6457;
+  font-weight: 600;
+  box-shadow: 0 1px 0 #dce5df;
+}
+
+.fb-roster-table .fb-roster-student-cell {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #fafcfb;
+  box-shadow: 1px 0 0 #e2e9e4;
+}
+
+.fb-roster-table thead .fb-roster-student-cell {
+  z-index: 3;
+  background: #f1f6f3;
+}
+
+.fb-roster-student-name {
+  display: block;
+  margin: 3px 0 5px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.fb-roster-student-cell small {
+  display: block;
+  color: #7b8980;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.fb-roster-table textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 90px;
+  min-height: 90px;
+  padding: 9px 10px;
+  border: 1px solid #dce5df;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text, #293a34);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  resize: vertical;
+  scroll-margin-top: 65px;
+}
+
+.fb-roster-table textarea::placeholder { color: #96a099; }
+.fb-roster-table textarea:focus {
+  border-color: #78a58a;
+  outline: 2px solid #e1eee5;
+  outline-offset: 1px;
+}
+.fb-roster-table textarea[readonly] { background: #f6f8f7; }
+
+.fb-roster-extra-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 3px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: #758278;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.fb-roster-extra-button.has-content { color: #3f6e50; font-weight: 600; }
+.fb-roster-extra-button svg { flex-shrink: 0; }
+.fb-roster-extra-button:hover { color: #285c3e; }
+
+.fb-roster-status-cell { line-height: 1.6; }
+.fb-roster-status {
+  display: inline-block;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #f1f4f2;
+  color: #7d8880;
+  font-size: 12px;
+}
+.fb-roster-status.is-ready,
+.fb-roster-status.is-generating { color: #466c54; background: #edf5ef; }
+.fb-roster-status.is-reviewed { color: #23673f; background: #e5f2e9; }
+.fb-roster-status.is-stale { color: #95672c; background: #fff3df; }
+.fb-roster-status.is-error { color: #a4473c; background: #fff0ed; }
+.fb-roster-result-button {
+  display: block;
+  width: fit-content;
+  margin-top: 10px;
+  color: #427956;
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.fb-roster-error {
+  display: block;
+  margin-top: 7px;
+  color: #a4473c;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.fb-roster-table .fb-roster-extra-row > td { padding: 16px 18px 18px; background: #f6f9f7; }
+.fb-roster-extra-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 12px; }
+.fb-roster-extra-heading strong { color: #496653; font-size: 13px; }
+.fb-roster-extra-heading > span { color: #7b8980; font-size: 12px; }
+.fb-roster-extra-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
+.fb-roster-extra-fields label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; color: #64776a; }
+
+@media (max-width: 720px) {
+  .fb-roster-student-col { width: 104px; }
+  .fb-roster-scroll { scroll-padding-left: 114px; }
+  .fb-roster-table-course { min-width: 544px !important; }
+  .fb-roster-extra-col { width: 100px; }
+  .fb-roster-status-col { width: 116px; }
+  .fb-group-workspace .fb-savebar { position: static; }
+  .fb-roster-table th,
+  .fb-roster-table td { padding: 10px; }
+}

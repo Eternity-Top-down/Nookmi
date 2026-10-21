@@ -21,47 +21,60 @@ function fixture(module: ModuleId) {
 }
 const render = (module: ModuleId, students: Student[], session: FeedbackSession) => renderToStaticMarkup(<FeedbackWorkspace
   module={module} students={students} classId="class-1" studentId={null} sessions={[session]} onSave={async () => true} />);
-const cards = (html: string) => [...html.matchAll(/<article class="fb-student-card"[^>]*>([\s\S]*?)<\/article>/g)].map((match) => match[1]);
+const noteRows = (html: string) => [...html.matchAll(/<tr\b[^>]*aria-label="([^"]+)的反馈记录"[^>]*>([\s\S]*?)<\/tr>/g)];
+const results = (html: string) => [...html.matchAll(/<article\b[^>]*aria-label="([^"]+)的反馈结果"[^>]*>([\s\S]*?)<\/article>/g)];
+function buttonWithText(html: string, text: string) {
+  return [...html.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)]
+    .find((match) => match[2].replace(/<[^>]*>/g, "").includes(text));
+}
 
 describe("full-class feedback workspace", () => {
-  it.each(["evening", "course"] as const)("shows every %s student's real notes and body together without a selection sidebar", (module) => {
+  it.each(["evening", "course"] as const)("puts every %s student's notes in one table and keeps long feedback outside it", (module) => {
     const { students, session } = fixture(module);
     const before = structuredClone(session);
     const html = render(module, students, session);
-    const studentCards = cards(html);
-    expect(studentCards).toHaveLength(students.length);
+    const table = /<table\b[^>]*>([\s\S]*?)<\/table>/.exec(html)?.[1];
+    expect(table).toBeDefined();
+    const rows = noteRows(table!);
+    expect(rows.map((row) => row[1])).toEqual(students.map((student) => student.name));
+    expect(table).toContain("<thead>");
+    expect(table).toContain("<tbody>");
     expect(html).not.toContain('aria-label="选择反馈学生"');
     expect(html.match(/全班共同学习二次函数/g)).toHaveLength(1);
+    expect(table).not.toContain("家长反馈正文");
+    expect(table).not.toContain("甲的已核对正文");
+    expect(html).toContain("甲的已核对正文");
     for (let index = 0; index < students.length; index++) {
-      const card = studentCards[index];
-      expect(card).toContain(`aria-label="${students[index].name}的学生情况"`);
-      expect(card).toContain(`${students[index].name}的家长反馈正文`);
-      expect(card).toContain(`复制 ${students[index].name} 的反馈`);
-      expect(card).not.toContain(' required=""');
-      if (index < 3) expect(card).toContain(`${students[index].name}的专属观察`);
+      const row = rows[index][2];
+      expect(row).toContain(`aria-label="${students[index].name}的学生情况"`);
+      expect(row).not.toContain(' required=""');
+      if (index < 3) expect(row).toContain(`${students[index].name}的专属观察`);
       for (const other of students.filter((student) => student.id !== students[index].id)) {
-        expect(card).not.toContain(`${other.name}的专属观察`);
+        expect(row).not.toContain(`${other.name}的专属观察`);
       }
     }
     const ids = [...html.matchAll(/<textarea[^>]+id="([^"]+)"/g)].map((match) => match[1]);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids).toHaveLength(students.length);
+    expect(ids.length).toBeGreaterThanOrEqual(students.length);
     expect(session).toEqual(before);
   });
 
   it("only offers batch generation for students with facts and no existing body", () => {
     const { students, session } = fixture("course");
     const html = render("course", students, session);
-    expect(html).toContain("生成未完成反馈（2）");
-    const studentCards = cards(html);
-    expect(studentCards[0]).toContain("重新生成候选");
-    expect(studentCards[0]).toMatch(/<button[^>]*class="button button-secondary fb-copy-button"(?![^>]*disabled)/);
-    expect(studentCards[1]).toMatch(/<button[^>]*class="button button-secondary fb-copy-button"[^>]*disabled/);
-    expect(studentCards[3]).toMatch(/<button[^>]*class="button button-primary"[^>]*disabled/);
-    expect(studentCards[3]).toContain("只有未来安排，不属于事实");
+    expect(buttonWithText(html, "AI 批量生成（2 人）")).toBeDefined();
+    expect(buttonWithText(html, "AI 批量生成（2 人）")?.[1]).not.toContain("disabled");
+    const firstResult = results(html).find((result) => result[1] === students[0].name);
+    expect(firstResult?.[2]).toContain("重新生成候选");
+    expect(buttonWithText(html, "复制 甲同学 的反馈")).toBeDefined();
+    expect(buttonWithText(html, "复制 甲同学 的反馈")?.[1]).not.toContain("disabled");
+    expect(buttonWithText(html, "复制 乙同学 的反馈")?.[1]).toContain("disabled");
+    const lastRow = noteRows(html)[3][2];
+    expect(lastRow).not.toContain("待生成");
+    expect(session.entries[3].observations?.tasks).toBe("只有未来安排，不属于事实");
   });
 
-  it("computes stale generation markers separately for each student card", () => {
+  it("marks a changed student's row and result without marking other students stale", () => {
     const { students, session } = fixture("course");
     for (const entry of session.entries.slice(0, 2)) {
       entry.content = `${entry.studentId}的生成正文`;
@@ -70,10 +83,24 @@ describe("full-class feedback workspace", () => {
       entry.generatedFrom = generationSignature(session.module, session.brief!, entry.observations!, "初二", session.lessonAt);
     }
     session.entries[1].observations!.performance = "生成后新增的新观察";
-    const studentCards = cards(render("course", students, session));
-    expect(studentCards[0]).not.toContain("生成依据已更新");
-    expect(studentCards[1]).toContain("生成依据已更新");
-    expect(studentCards[1]).toContain("生成后新增的新观察");
+    const html = render("course", students, session);
+    const firstResult = results(html).find((result) => result[1] === students[0].name);
+    const secondResult = results(html).find((result) => result[1] === students[1].name);
+    expect(firstResult?.[2]).not.toContain("生成依据已更新");
+    expect(secondResult?.[2]).toContain("生成依据已更新");
+    const rows = noteRows(html);
+    expect(rows[0][2]).not.toContain("记录已更新");
+    expect(rows[1][2]).toContain("记录已更新");
+    expect(rows[1][2]).toContain("生成后新增的新观察");
+  });
+
+  it("disables the batch action when everyone has feedback or only future arrangements", () => {
+    const { students, session } = fixture("course");
+    session.entries[1].content = "已手写的正文";
+    session.entries[2].observations = { ...emptyObservations(), plan: "之后多练习", tasks: "完成练习" };
+    const html = render("course", students, session);
+    expect(buttonWithText(html, "AI 批量生成")?.[1]).toContain("disabled");
+    expect(html).toContain("已手写的正文");
   });
 
   it("only shows historical delete controls when a confirmation callback is supplied", () => {

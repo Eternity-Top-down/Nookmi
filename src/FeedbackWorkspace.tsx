@@ -17,6 +17,7 @@ import { Modal } from "./components";
 import FeedbackStyleReference from "./FeedbackStyleReference";
 import FeedbackHistory from "./FeedbackHistory";
 import FeedbackWordExport from "./FeedbackWordExport";
+import FeedbackRosterTable from "./FeedbackRosterTable";
 import { feedbackDraftScope, readFeedbackDrafts, writeFeedbackDraft, removeFeedbackDraft, type FeedbackDraftRecord } from "./feedbackDrafts";
 import { newId } from "./data";
 import {
@@ -98,6 +99,7 @@ type Progress = {
   failed: number;
   skipped: number;
   name: string;
+  studentId: string;
 };
 const OBSERVATION_FIELDS: {
   key: Exclude<keyof StudentObservations, "subjects">;
@@ -269,6 +271,7 @@ export default function FeedbackWorkspace({
     };
   });
   const [draft, setDraft] = useState(initial.session);
+  const [expandedResults, setExpandedResults] = useState(() => new Set(initial.session.entries.filter((entry) => entry.content.trim()).map((entry) => entry.studentId)));
   const [baseline, setBaseline] = useState(initial.baseline);
   const baselineRef = useRef(baseline);
   const [selectedId, setSelectedId] = useState(initial.selectedId);
@@ -299,6 +302,9 @@ export default function FeedbackWorkspace({
   onSaveRef.current = onSave;
   const styleRef = useRef(styleReference);
   const draftRef = useRef(draft);
+  useEffect(() => {
+    setExpandedResults(new Set(draftRef.current.entries.filter((entry) => entry.content.trim()).map((entry) => entry.studentId)));
+  }, [draft.id]);
   const studentsRef = useRef(students);
   studentsRef.current = students;
   const epoch = useRef(0);
@@ -335,6 +341,19 @@ export default function FeedbackWorkspace({
     const entry = entryFor(draft, student.id);
     return !entry.content.trim() && hasPersonalFacts(entry.observations);
   });
+  const recordedCount = students.filter((student) => hasPersonalFacts(entryFor(draft, student.id).observations)).length;
+  const staleIds = new Set(students.filter((student) => {
+    const entry = entryFor(draft, student.id);
+    return !entry.reviewed && entryIsStale(entry, sourceSignature(draft, student, entry.generationSource === "outline" ? "" : styleReference));
+  }).map((student) => student.id));
+  const resultId = (id: string) => `${fieldId}-${id}-result`;
+  function viewResult(id: string) {
+    const element = document.getElementById(id);
+    const details = element?.querySelector("details");
+    if (details) details.open = true;
+    element?.focus({ preventScroll: true });
+    element?.scrollIntoView({ block: "start" });
+  }
   const periodName =
     module === "one-to-one" ? "本次" : module === "evening" ? "本周" : "本月";
   const title =
@@ -711,6 +730,7 @@ export default function FeedbackWorkspace({
       generationSource: source,
       generatedFrom: signature,
     }));
+    setExpandedResults((current) => new Set(current).add(student.id));
   }
   function organize(student: Student) {
     if (!validateContext()) return;
@@ -775,6 +795,7 @@ export default function FeedbackWorkspace({
       failed: 0,
       skipped: 0,
       name: "",
+      studentId: "",
     };
     const reviewWarnings: { name: string; warning: string }[] = [];
     setProgress({ ...summary });
@@ -799,7 +820,13 @@ export default function FeedbackWorkspace({
       }
       const started = revision(student.id);
       const signature = sourceSignature(current, student, generationStyle);
+      setFailures((prior) => {
+        const next = new Map(prior);
+        next.delete(student.id);
+        return next;
+      });
       summary.name = student.name;
+      summary.studentId = student.id;
       setProgress({ ...summary });
       try {
         const result = await generateFeedback(
@@ -939,7 +966,28 @@ export default function FeedbackWorkspace({
     : false;
 
 
-  function renderStudentPanels(selected: Student) {
+  function renderGenerationActions(student: Student) {
+    const entry = entryFor(draft, student.id);
+    const observations = normalizeObservations(entry.observations);
+    return <>
+      {!readonly && <div className="fb-generate-actions">
+        <button type="button" className="button button-primary"
+          disabled={Boolean(progress) || styleDirty || !hasPersonalFacts(observations)}
+          onClick={() => requestGenerate(student)}>
+          <Sparkles size={16} />{entry.content.trim() ? "重新生成候选" : "AI 生成反馈"}
+        </button>
+        <button type="button" className="button button-ghost button-sm"
+          disabled={Boolean(progress) || !hasObservations(observations)} onClick={() => organize(student)}>
+          <WandSparkles size={15} />按原始记录整理草稿
+        </button>
+        <small>整理草稿不调用 AI，不添加未记录的事实。</small>
+      </div>}
+      {styleDirty && <p className="fb-field-note">风格参考有未保存修改，请先保存或撤销，再使用 AI 生成。</p>}
+      {failures.has(student.id) && <p className="fb-inline-error" role="alert">{failures.get(student.id)}</p>}
+    </>;
+  }
+
+  function renderStudentPanels(selected: Student, outputOnly = false) {
     const selectedEntry = entryFor(draft, selected.id);
     const observations = normalizeObservations(selectedEntry.observations);
     const currentSignature = sourceSignature(draft, selected, selectedEntry.generationSource === "outline" ? "" : styleReference);
@@ -947,7 +995,7 @@ export default function FeedbackWorkspace({
     const subjectFields = [...new Set([...activeBrief.subjects,
       ...Object.entries(observations.subjects).filter(([, value]) => value.trim()).map(([subject]) => subject)])];
     return (<>
-              <section className="fb-facts">
+              {!outputOnly && <section className="fb-facts">
                 <div className="fb-panel-title">
                   <div>
                     <h3>
@@ -1087,42 +1135,8 @@ export default function FeedbackWorkspace({
                         : "未填写共用教学内容，生成时将只依据已记录的个人情况。"}
                     </p>
                   )}
-                {!readonly && (
-                  <div className="fb-generate-actions">
-                    <button
-                      type="button"
-                      className="button button-primary"
-                      disabled={
-                        Boolean(progress) || styleDirty || !hasPersonalFacts(observations)
-                      }
-                      onClick={() => requestGenerate(selected)}
-                    >
-                      <Sparkles size={16} />
-                      {selectedEntry.content.trim()
-                        ? "重新生成候选"
-                        : "AI 生成反馈"}
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-ghost button-sm"
-                      disabled={
-                        Boolean(progress) || !hasObservations(observations)
-                      }
-                      onClick={() => organize(selected)}
-                    >
-                      <WandSparkles size={15} />
-                      按原始记录整理草稿
-                    </button>
-                    <small>整理草稿不调用 AI，不添加未记录的事实。</small>
-                  </div>
-                )}
-                {styleDirty && <p className="fb-field-note">风格参考有未保存修改，请先保存或撤销，再使用 AI 生成。</p>}
-                {failures.has(selected.id) && (
-                  <p className="fb-inline-error" role="alert">
-                    {failures.get(selected.id)}
-                  </p>
-                )}
-              </section>
+                {renderGenerationActions(selected)}
+              </section>}
               <section className="fb-output">
                 <div className="fb-panel-title">
                   <div>
@@ -1137,6 +1151,7 @@ export default function FeedbackWorkspace({
                         : "自由编辑"}
                   </span>
                 </div>
+                {outputOnly && renderGenerationActions(selected)}
                 {stale && (
                   <div className="fb-stale" role="status">
                     生成依据已更新，正文仍保留旧内容。请重新生成，或修改并再次核对。
@@ -1214,8 +1229,13 @@ export default function FeedbackWorkspace({
     );
   }
 
+  const statusNotice = status && <div className={`fb-status ${status.error ? "fb-status-error" : ""}`} role={status.error ? "alert" : "status"}>
+    {!status.error && <Check size={16} />}<span>{status.text}</span>
+    {needsConfiguration && onConfigureAI && <button type="button" className="button button-secondary button-sm" onClick={onConfigureAI}>配置 AI</button>}
+  </div>;
+
   return (
-    <section className="fb-workspace" aria-label="反馈工作区">
+    <section className={`fb-workspace${isOneToOne ? "" : " fb-group-workspace"}`} aria-label="反馈工作区">
       <div className="fb-heading">
         <div>
           <span className="fb-eyebrow">LESS WRITING · MORE TEACHING</span>
@@ -1462,51 +1482,24 @@ export default function FeedbackWorkspace({
           </label>
         </details>
       </section>
-      {status && (
-        <div
-          className={`fb-status ${status.error ? "fb-status-error" : ""}`}
-          role={status.error ? "alert" : "status"}
-        >
-          {!status.error && <Check size={16} />}
-          <span>{status.text}</span>
-          {needsConfiguration && onConfigureAI && (
-            <button
-              type="button"
-              className="button button-secondary button-sm"
-              onClick={onConfigureAI}
-            >
-              配置 AI
-            </button>
-          )}
-        </div>
-      )}
+      {(isOneToOne || !students.length) && statusNotice}
       <div className="fb-work-heading">
         <div>
           <h3>
-            <span>02</span>{isOneToOne ? "本节课表现与课后安排" : "全班反馈，在这里一起完成"}
+            <span>02</span>{isOneToOne ? "本节课表现与课后安排" : "集中填写全班记录"}
           </h3>
           <p>
             {isOneToOne
               ? "填写简短观察，编辑并核对反馈正文。"
-              : `${filledCount} 人已有正文 · ${reviewedCount} 人已核对`}
+              : `每行一位学生，短句即可；有观察的格子再写，不需要填满。${recordedCount} / ${students.length} 人已有记录。`}
             {module === "evening"
               ? " · 初二默认数物，初三默认数物化，科目可在上方调整"
               : ""}
           </p>
         </div>
-        {module !== "one-to-one" && !readonly && (
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={Boolean(progress) || styleDirty || !eligible.length}
-            onClick={() => void runGeneration(eligible)}
-          >
-            <Sparkles size={16} />
-            生成未完成反馈{eligible.length ? `（${eligible.length}）` : ""}
-          </button>
-        )}
+        {!isOneToOne && filledCount > 0 && <button type="button" className="button button-ghost button-sm" onClick={() => viewResult(`${fieldId}-results`)}>查看生成结果（{filledCount}）</button>}
       </div>
-      {progress && (
+      {isOneToOne && progress && (
         <div className="fb-generation-progress" role="status">
           <LoaderCircle size={17} className="fb-spin" />
           <span>
@@ -1531,20 +1524,63 @@ export default function FeedbackWorkspace({
           <p>{isOneToOne ? "进入学生页面，即可记录这节课并生成反馈。" : "学生加入后，就可以逐一补充真实情况并生成反馈。"}</p>
         </div>
       ) : (
-        <div className={isOneToOne ? "fb-composer fb-one-student" : "fb-class-workspace"}>
-          {isOneToOne ? selected && renderStudentPanels(selected) : students.map((student) => {
+        isOneToOne ? <div className="fb-composer fb-one-student">{selected && renderStudentPanels(selected)}</div> : <>
+          <FeedbackRosterTable key={draft.id} module={module} students={students} entries={draft.entries}
+            subjects={activeBrief.subjects} readonly={readonly} failures={failures} staleIds={staleIds}
+            generatingStudentId={progress?.studentId} onViewResult={(id) => viewResult(resultId(id))}
+            onObservationChange={changeObservation}
+            onSubjectChange={(id, subject, value) => changeEntry(id, (entry) => {
+              const observations = normalizeObservations(entry.observations);
+              const subjects = { ...observations.subjects, [subject]: value };
+              if (!value) delete subjects[subject];
+              return { ...entry, observations: { ...observations, subjects }, reviewed: false };
+            })} />
+          <div className="fb-batch-bar">
+            <div>
+              <strong>{eligible.length ? `${eligible.length} 人可生成` : filledCount ? "已有正文已保留" : "先记录学生的真实情况"}</strong>
+              <p>只生成有记录且正文为空的学生；已有正文在下方单独修改或重新生成。</p>
+              {styleDirty && <p className="fb-inline-error">请先保存或撤销上方风格参考的修改，再生成。</p>}
+            </div>
+            {!readonly && <button type="button" className="button button-primary"
+              disabled={Boolean(progress) || styleDirty || !eligible.length}
+              onClick={() => void runGeneration(eligible)}>
+              {progress ? <LoaderCircle size={16} className="fb-spin" /> : <Sparkles size={16} />}
+              AI 批量生成（{eligible.length} 人）
+            </button>}
+          </div>
+          {statusNotice}
+          {progress && <div className="fb-generation-progress" role="status">
+            <LoaderCircle size={17} className="fb-spin" />
+            <span>生成并检查中 {progress.name || "反馈"} · {progress.completed} / {progress.total}，失败 {progress.failed} 位</span>
+            <button type="button" className="button button-ghost button-sm" onClick={() => cancelGeneration()}><Square size={13} />停止生成</button>
+          </div>}
+          <div className="fb-work-heading fb-results-heading" id={`${fieldId}-results`} tabIndex={-1}>
+            <div><h3><span>03</span>核对生成结果</h3>
+              <p>{filledCount} 人已有正文 · {reviewedCount} 人已核对。可以直接修改，核对后复制或导出 Word。</p>
+            </div>
+          </div>
+          <div className="fb-class-workspace">
+          {students.map((student) => {
             const entry = entryFor(draft, student.id);
             const state = failures.has(student.id) ? "生成待重试" : entry.content.trim()
-              ? entry.reviewed ? "已核对" : "待核对" : hasObservations(entry.observations) ? "已记录" : "待记录";
-            return <article className="fb-student-card" key={student.id} aria-label={`${student.name}的反馈工作区`}>
-              <header className="fb-student-card-heading">
-                <div><h3>{student.name}</h3><span>{student.grade || "未设置年级"}</span></div>
-                <span className={`fb-student-status ${entry.reviewed ? "fb-reviewed" : ""}`}>{state}</span>
-              </header>
-              <div className="fb-student-panels">{renderStudentPanels(student)}</div>
+              ? staleIds.has(student.id) ? "记录已更新" : entry.reviewed ? "已核对" : "待核对" : hasPersonalFacts(entry.observations) ? "待生成" : "待记录";
+            return <article className="fb-student-card fb-student-result" key={student.id} id={resultId(student.id)} tabIndex={-1} aria-label={`${student.name}的反馈结果`}>
+              <details className="fb-result-details" open={expandedResults.has(student.id)} onToggle={(event) => {
+                const open = event.currentTarget.open;
+                setExpandedResults((current) => {
+                  if (current.has(student.id) === open) return current;
+                  const next = new Set(current);
+                  if (open) next.add(student.id); else next.delete(student.id);
+                  return next;
+                });
+              }}>
+                <summary><strong>{student.name}</strong><span>{entry.content.trim() ? state : `${failures.has(student.id) ? "生成待重试" : "尚未生成"} · 可展开手写或单独生成`}</span></summary>
+                {renderStudentPanels(student, true)}
+              </details>
             </article>;
           })}
-        </div>
+          </div>
+        </>
       )}
       <div className="fb-savebar">
         <p>
