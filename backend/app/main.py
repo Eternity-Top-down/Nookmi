@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from .database import Database
 from .routes.ai import router as ai_router
 from .routes.workspace import router as workspace_router
+from .routes.exports import router as exports_router
 from .services.provider import AIProvider
 from .services.settings import SettingsStore
 from .services.validation import validation_detail
@@ -36,7 +37,7 @@ def local_url(value: str, *, host_only: bool = False) -> bool:
 
 def create_app(data_dir: str | Path | None = None) -> FastAPI:
     directory = Path(data_dir or os.environ.get("NOOKMI_DATA_DIR") or Path(__file__).resolve().parents[2] / ".local")
-    app = FastAPI(title="Nookmi local API", version="0.6.1", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Nookmi local API", version="0.7.0", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.database = Database(directory)
     app.state.settings = SettingsStore(directory)
     app.state.provider = AIProvider(app.state.settings)
@@ -80,6 +81,7 @@ def create_app(data_dir: str | Path | None = None) -> FastAPI:
 
     app.include_router(workspace_router)
     app.include_router(ai_router)
+    app.include_router(exports_router)
     return app
 
 

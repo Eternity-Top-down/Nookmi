@@ -46,11 +46,35 @@ describe("generation review notices", () => {
 });
 
 describe("local generated student references", () => {
-  it("replaces every anonymous reference with the exact target name independently", () => {
+  it("replaces every anonymous reference independently for each student", () => {
     const response = "  【学生】能独立完成基础题。建议【学生】复盘变形过程。\n";
     expect(prepareGeneratedFeedback(response, "测试甲")).toBe("测试甲能独立完成基础题。建议测试甲复盘变形过程。");
     expect(prepareGeneratedFeedback(response, "测试乙")).toBe("测试乙能独立完成基础题。建议测试乙复盘变形过程。");
     expect(response).toContain("【学生】");
+  });
+
+  it.each([
+    ["李亦琳", "亦琳"], ["张瑶", "张瑶"], ["缪宜宏", "宜宏"], ["欧阳雨桐", "雨桐"],
+    ["司马文轩", "文轩"], ["诸葛亮", "诸葛亮"], ["欧阳娜", "欧阳娜"],
+    ["张王雨桐", "张王雨桐"], ["阿依古丽", "阿依古丽"], ["阿依娜", "阿依娜"],
+    ["阿不都·热合曼", "阿不都·热合曼"], ["Alice Smith", "Alice Smith"], ["小明 A", "小明 A"],
+  ])("uses an appropriate generated address for %s", (name, address) => {
+    expect(prepareGeneratedFeedback("【学生】完成认真。建议【学生】复习。", name))
+      .toBe(`${address}完成认真。建议${address}复习。`);
+  });
+
+  it("also shortens an exact current full-name reference without changing another student or a surname alone", () => {
+    const response = "李亦琳完成认真。李老师建议【学生】复习。张亦琳的反馈另行记录。";
+    expect(prepareGeneratedFeedback(response, "李亦琳"))
+      .toBe("亦琳完成认真。李老师建议亦琳复习。张亦琳的反馈另行记录。");
+    expect(response).toBe("李亦琳完成认真。李老师建议【学生】复习。张亦琳的反馈另行记录。");
+  });
+
+  it("trims outer name whitespace and refuses to silently remove references for an empty name", () => {
+    expect(prepareGeneratedFeedback("【学生】完成认真。", " 李亦琳 ")).toBe("亦琳完成认真。");
+    for (const name of ["", " \n "]) {
+      expect(() => prepareGeneratedFeedback("【学生】完成认真。", name)).toThrow("学生姓名为空");
+    }
   });
 
   it("inserts punctuation and replacement tokens literally", () => {
@@ -518,5 +542,16 @@ describe("generated content provenance and concurrent edits", () => {
     const edited = structuredClone(before);
     edited.entries[0].observations!.strengths = "保存期间补写的真实情况";
     expect(feedbackSnapshot(edited)).not.toBe(submitted);
+  });
+  it("keeps legacy draft baselines byte-for-byte compatible while detecting explicit lesson number edits", () => {
+    const saved = fixture();
+    const prior = JSON.stringify({ lessonAt: saved.lessonAt, brief: saved.brief, entries: saved.entries });
+    expect(feedbackSnapshot(saved)).toBe(prior);
+    expect(feedbackSnapshot({ ...saved, lessonNumber: undefined })).toBe(prior);
+    expect(feedbackSnapshot({ ...saved, title: undefined })).toBe(prior);
+    expect(feedbackSnapshot({ ...saved, title: "" })).not.toBe(prior);
+    expect(feedbackSnapshot({ ...saved, title: "原标题" })).not.toBe(feedbackSnapshot({ ...saved, title: "新标题" }));
+    expect(feedbackSnapshot({ ...saved, lessonNumber: 8 })).not.toBe(prior);
+    expect(feedbackSnapshot({ ...saved, lessonNumber: 0 })).not.toBe(feedbackSnapshot({ ...saved, lessonNumber: 8 }));
   });
 });

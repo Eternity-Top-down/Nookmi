@@ -191,6 +191,120 @@ class WorkspaceTests(ApiTestCase):
         self.assertEqual(response.json()["data"], data)
         self.assertEqual(self.client.get("/api/workspace").json()["data"], data)
 
+    def test_one_to_one_lesson_number_round_trip_and_restart(self):
+        data = workspace()
+        data["feedbackSessions"] = [session(
+            brief=brief(teachingContent="有理数运算"), lessonNumber=8,
+            entries=[{"studentId": "student-1", "content": "原反馈正文", "observations": observations(performance="原始观察")}],
+        )]
+        for revision, number in enumerate((8, 1, 9999)):
+            with self.subTest(number=number):
+                data["feedbackSessions"][0]["lessonNumber"] = number
+                response = self.put_workspace(data, revision)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["data"], data)
+                self.assertEqual(self.client.get("/api/workspace").json()["data"], data)
+        with TestClient(create_app(self.directory.name), base_url="http://127.0.0.1:8000") as restarted:
+            self.assertEqual(restarted.get("/api/workspace").json()["data"], data)
+
+    def test_legacy_and_null_lesson_numbers_remain_optional_for_all_modules(self):
+        for module in ("one-to-one", "evening", "course"):
+            for explicit_null in (False, True):
+                with self.subTest(module=module, explicit_null=explicit_null):
+                    data = workspace()
+                    if module == "course":
+                        data["classes"][0]["module"] = "course"
+                        data["students"][1]["module"] = "course"
+                    record = session(module)
+                    data["feedbackSessions"] = [record]
+                    expected = deepcopy(data)
+                    if explicit_null:
+                        record["lessonNumber"] = None
+                    revision = self.client.get("/api/workspace").json()["revision"]
+                    response = self.put_workspace(data, revision)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()["data"], expected)
+                    self.assertEqual(self.client.get("/api/workspace").json()["data"], expected)
+        with self.assertRaises(ValidationError):
+            FeedbackSession.model_validate(session(lessonNumber=None, brief=None))
+
+    def test_invalid_lesson_numbers_do_not_overwrite_saved_feedback(self):
+        data = workspace()
+        data["feedbackSessions"] = [session(lessonNumber=8)]
+        self.assertEqual(self.put_workspace(data).status_code, 200)
+        for number in (0, -1, 10000, 1.5, 1.0, "8", True, False):
+            with self.subTest(number=number):
+                changed = deepcopy(data)
+                changed["feedbackSessions"][0]["lessonNumber"] = number
+                response = self.put_workspace(changed, 1)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn("课程次数", response.json()["detail"])
+                self.assertEqual(self.client.get("/api/workspace").json(), {"data": data, "revision": 1})
+
+    def test_group_feedback_rejects_numeric_lesson_numbers(self):
+        for module in ("evening", "course"):
+            with self.subTest(module=module):
+                with self.assertRaises(ValidationError) as error:
+                    FeedbackSession.model_validate(session(module, lessonNumber=8))
+                self.assertEqual(error.exception.errors()[0]["type"], "lesson_number_module")
+                self.assertIn("仅适用于一对一", validation_detail("/api/workspace", error.exception.errors()))
+
+    def test_custom_lesson_title_round_trip_clearing_and_restart(self):
+        data = workspace()
+        data["feedbackSessions"] = [session(
+            lessonNumber=8, title="亦琳第8次数学课（10.21）",
+            brief=brief(teachingContent="数列练习"),
+        )]
+        for revision, title in enumerate(("亦琳第8次数学课（10.21）", "", "字" * 300)):
+            with self.subTest(title_length=len(title)):
+                data["feedbackSessions"][0]["title"] = title
+                response = self.put_workspace(data, revision)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["data"], data)
+                self.assertEqual(self.client.get("/api/workspace").json()["data"], data)
+        with TestClient(create_app(self.directory.name), base_url="http://127.0.0.1:8000") as restarted:
+            self.assertEqual(restarted.get("/api/workspace").json()["data"], data)
+
+    def test_null_lesson_titles_are_omitted_without_changing_legacy_content(self):
+        for module in ("one-to-one", "evening", "course"):
+            with self.subTest(module=module):
+                data = workspace()
+                if module == "course":
+                    data["classes"][0]["module"] = "course"
+                    data["students"][1]["module"] = "course"
+                data["feedbackSessions"] = [session(module)]
+                expected = deepcopy(data)
+                data["feedbackSessions"][0].update(title=None, lessonNumber=None)
+                revision = self.client.get("/api/workspace").json()["revision"]
+                response = self.put_workspace(data, revision)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["data"], expected)
+                self.assertEqual(self.client.get("/api/workspace").json()["data"], expected)
+
+    def test_invalid_titles_do_not_overwrite_saved_feedback(self):
+        data = workspace()
+        data["feedbackSessions"] = [session(title="已保存的标题")]
+        self.assertEqual(self.put_workspace(data).status_code, 200)
+        for title in ("字" * 301, 8, True, [], {"text": "标题"}):
+            with self.subTest(title=title):
+                changed = deepcopy(data)
+                changed["feedbackSessions"][0]["title"] = title
+                response = self.put_workspace(changed, 1)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn("反馈标题", response.json()["detail"])
+                self.assertEqual(self.client.get("/api/workspace").json(), {"data": data, "revision": 1})
+        with self.assertRaises(ValidationError):
+            FeedbackSession.model_validate(session(title="仅有标题", entries=[{"studentId": "student-1", "content": ""}]))
+
+    def test_group_feedback_rejects_even_empty_custom_titles(self):
+        for module in ("evening", "course"):
+            for title in ("本期反馈", ""):
+                with self.subTest(module=module, title=title):
+                    with self.assertRaises(ValidationError) as error:
+                        FeedbackSession.model_validate(session(module, title=title))
+                    self.assertEqual(error.exception.errors()[0]["type"], "feedback_title_module")
+                    self.assertIn("反馈标题", validation_detail("/api/workspace", error.exception.errors()))
+
     def test_shared_only_and_plan_only_drafts_are_saved(self):
         for draft in [
             session(brief=brief(teachingContent="本周复习内容"), entries=[{"studentId": "student-1", "content": ""}]),

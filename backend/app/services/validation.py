@@ -33,6 +33,8 @@ FIELDS = {
     ("apiKey",): FieldInfo("API Key", 2000, "key"),
     ("clearApiKey",): FieldInfo("删除 API Key 选项", kind="bool"),
     ("revision",): FieldInfo("数据版本", kind="number"),
+    ("lessonNumber",): FieldInfo("课程次数", kind="lesson_number"),
+    ("title",): FieldInfo("反馈标题", 300),
 }
 
 
@@ -71,6 +73,12 @@ def validation_message(error: dict) -> str:
         return "请至少填写一项这位学生的真实观察：课堂情况、值得肯定、需要关注或分学科记录；仅有课程内容、后续建议、课后任务或范文还不够"
     if code == "feedback_period_order":
         return "反馈结束日期不能早于开始日期"
+    if code == "lesson_number_module":
+        return "「课程次数」仅适用于一对一反馈，晚辅和班课请留空"
+    if code == "feedback_title_module":
+        return "「反馈标题」仅适用于一对一反馈，晚辅和班课请省略"
+    if info and info.kind == "lesson_number":
+        return "「课程次数」须为 1—9999 的整数"
     if code == "api_key_conflict":
         return "不能同时填写新 API Key 和选择删除 API Key，请只保留一种操作"
     if code == "missing":
@@ -110,6 +118,10 @@ def validation_message(error: dict) -> str:
 
 
 def validation_detail(path: str, errors: list[dict]) -> str:
+    if path == "/api/exports/feedback-docx":
+        from .feedback_docx import export_validation_message
+        messages = list(dict.fromkeys(export_validation_message(error) for error in errors))[:4]
+        return "Word 未导出：" + "；".join(messages) + "。"
     prefix = {
         "/api/ai/generate": "暂时无法生成反馈",
         "/api/ai/settings": "AI 设置未保存",

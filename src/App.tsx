@@ -14,7 +14,6 @@ import {
   Check,
   ChevronRight,
   ClipboardList,
-  Copy,
   Clock3,
   Database,
   FileText,
@@ -38,16 +37,13 @@ import {
 } from "lucide-react";
 import { ClassForm, ImportStudents, Modal, StudentForm } from "./components";
 import FeedbackWorkspace from "./FeedbackWorkspace";
+import FeedbackHistory from "./FeedbackHistory";
 import AISettings from "./AISettings";
 import { hasObservations } from "./feedbackModel";
-import { clearFeedbackDrafts, feedbackDraftScope, pruneStudentFeedbackDrafts } from "./feedbackDrafts";
+import { clearFeedbackDrafts, deleteFeedbackWithDraftRecovery, feedbackDraftScope, pruneStudentFeedbackDrafts } from "./feedbackDrafts";
+import { formatFeedbackPeriod } from "./feedback";
 import { clearAllStyleDrafts } from "./styleDrafts";
 import { ApiError, getWorkspace, putWorkspace } from "./api";
-import {
-  copyFeedbackText,
-  formatFeedbackPeriod,
-  formatStudentFeedback,
-} from "./feedback";
 import { version } from "../package.json";
 import {
   createDemoData,
@@ -56,6 +52,7 @@ import {
   newId,
   parseBackup,
   pruneFeedbackForStudent,
+  removeFeedbackRecord,
 } from "./data";
 import { parseRoute, routeUrl, type Route } from "./routes";
 import {
@@ -201,7 +198,7 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [reloadAttempt, setReloadAttempt] = useState(0);
   const [workspaceEpoch, setWorkspaceEpoch] = useState(0);
-  const [saving, setSaving] = useState(false);
+  const [blockingSave, setBlockingSave] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [showMigration, setShowMigration] = useState(true);
   const revision = useRef(0);
@@ -222,7 +219,6 @@ export default function App() {
   const [activePanel, setActivePanel] = useState<"feedback" | "details">(
     "feedback",
   );
-  const [manualCopy, setManualCopy] = useState<string | null>(null);
   const feedbackDirty = useRef(false);
   const routeRef = useRef(route);
   routeRef.current = route;
@@ -399,28 +395,6 @@ export default function App() {
       `${MODULES[module].title}的个人风格参考已保存`,
     );
   }
-  async function copyPersonalFeedback(
-    session: FeedbackSession,
-    target: Student,
-  ) {
-    const entry = session.entries.find(
-      (value) => value.studentId === target.id,
-    );
-    if (session.brief && !entry?.reviewed) {
-      setToast({
-        message: "请先到班级反馈页核对这位学生的正文，再复制。",
-        error: true,
-      });
-      return;
-    }
-    const text = formatStudentFeedback(session, target, group?.name);
-    try {
-      await copyFeedbackText(text);
-      setToast({ message: "反馈已复制，可以直接粘贴发送。" });
-    } catch {
-      setManualCopy(text);
-    }
-  }
   function workspaceTabs(personal = false) {
     return (
       <div
@@ -455,9 +429,13 @@ export default function App() {
       });
       return false;
     }
-    if (savingLock.current) return false;
+    if (savingLock.current) {
+      if (!silent) setToast({ message: "后台正在保存，请稍后重试。" });
+      return false;
+    }
     savingLock.current = true;
-    setSaving(true);
+    // Background feedback saves keep the write lock, without covering the editor.
+    setBlockingSave(!silent);
     try {
       const saved = await putWorkspace(typeof next === "function" ? next(dataRef.current) : next, revision.current);
       revision.current = saved.revision;
@@ -484,13 +462,53 @@ export default function App() {
       return false;
     } finally {
       savingLock.current = false;
-      setSaving(false);
+      setBlockingSave(false);
     }
   }
   function clearRecoveredInputs(scope?: string) {
     const feedback = clearFeedbackDrafts(scope);
     const styleError = scope === undefined ? clearAllStyleDrafts() : null;
     if (!feedback.ok || styleError) setToast({ message: feedback.error ?? styleError ?? "本机草稿未能清理。", error: true });
+  }
+  function deleteFeedback(session: FeedbackSession, targetStudent?: Student) {
+    const personal = targetStudent && session.module !== "one-to-one";
+    const scope = feedbackDraftScope(session.module, session.classId, session.studentId);
+    setConfirmation({
+      title: personal ? `删除${targetStudent.name}的本次反馈？` : "删除这次历史反馈？",
+      message: `${formatFeedbackPeriod(session)}。${personal
+        ? "只删除这位学生本次的填写记录和反馈，保留同班其他学生与共用内容。"
+        : session.module === "one-to-one" ? "将删除这次课程的填写记录、反馈正文和对应本机草稿。"
+        : "将删除本周期全班的填写记录、反馈正文和共用内容。"}学生档案不受影响，此操作无法撤销。`,
+      label: personal ? "删除个人本次反馈" : "删除本次反馈",
+      danger: true,
+      action: async () => {
+        if (savingLock.current) {
+          setToast({ message: "本次内容正在保存，请保存完成后再删除。", error: true });
+          return;
+        }
+        const nextSessions = removeFeedbackRecord(dataRef.current.feedbackSessions ?? [], session.id, personal ? targetStudent.id : undefined);
+        const result = await deleteFeedbackWithDraftRecovery({
+          scope, sessionId: session.id, studentId: personal ? targetStudent.id : undefined,
+          sessionRemains: nextSessions.some((item) => item.id === session.id),
+          persist: () => persist((current) => ({ ...current,
+            feedbackSessions: removeFeedbackRecord(current.feedbackSessions ?? [], session.id, personal ? targetStudent.id : undefined),
+          }), "反馈已删除"),
+        });
+        if (!result.ok) {
+          if (result.recovery) {
+            feedbackDirty.current = true;
+            download(JSON.stringify({ version: 1, scope, record: result.recovery }, null, 2), `nookmi-feedback-recovery-${localDate()}.json`);
+          }
+          if (result.error) setToast({ message: `${result.error}${result.recovery ? "已请求下载恢复草稿副本，请确认下载完成并保留该文件。" : ""}`, error: true });
+          return;
+        }
+        if (result.ok) {
+          setConfirmation(null);
+          feedbackDirty.current = false;
+          setWorkspaceEpoch((value) => value + 1);
+        }
+      },
+    });
   }
   async function saveStudent(fields: StudentFields, editing?: Student) {
     const now = new Date().toISOString();
@@ -1204,6 +1222,7 @@ export default function App() {
                     classId={null}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    onDelete={deleteFeedback}
                     autoSaveBlocked={conflict}
                     styleReference={data.feedbackStyles?.[student.module] ?? ""}
                     onSaveStyle={(reference) => saveFeedbackStyle(student.module, reference)}
@@ -1232,52 +1251,13 @@ export default function App() {
                         去班级填写反馈
                       </button>
                     </div>
-                    {personalFeedback.length ? (
-                      <div className="note-list">
-                        {personalFeedback.map((session) => (
-                          <article className="teaching-note" key={session.id}>
-                            <div className="note-top">
-                              <span>
-                                <Clock3 size={15} />
-                                {formatFeedbackPeriod(session)}
-                              </span>
-                              <button
-                                className="button button-secondary button-sm"
-                                disabled={Boolean(
-                                  session.brief &&
-                                    !session.entries.find(
-                                      (entry) => entry.studentId === student.id,
-                                    )?.reviewed,
-                                )}
-                                onClick={() =>
-                                  void copyPersonalFeedback(session, student)
-                                }
-                              >
-                                <Copy size={14} />
-                                {session.brief &&
-                                !session.entries.find(
-                                  (entry) => entry.studentId === student.id,
-                                )?.reviewed
-                                  ? "待核对"
-                                  : "复制反馈"}
-                              </button>
-                            </div>
-                            <p>
-                              {session.entries.find(
-                                (entry) => entry.studentId === student.id,
-                              )?.content ||
-                                "已记录个人情况，反馈正文待生成。可在班级反馈工作台继续补充。"}
-                            </p>
-                          </article>
-                        ))}
-                      </div>
-                    ) : (
-                      <EmptyState
-                        icon={<MessageSquareText size={32} />}
-                        title="还没有已保存的反馈"
-                        text="在班级反馈页为这位学生填写内容并保存后，会显示在这里。"
-                      />
-                    )}
+                    <FeedbackHistory
+                      key={`personal-history-${student.id}`}
+                      sessions={personalFeedback}
+                      onDelete={(session) => deleteFeedback(session, student)}
+                      students={[student]}
+                      className={group?.name}
+                    />
                   </section>
                 )
               ) : (
@@ -1508,6 +1488,7 @@ export default function App() {
                     className={group.name}
                     sessions={scopedFeedback}
                     onSave={saveFeedback}
+                    onDelete={deleteFeedback}
                     autoSaveBlocked={conflict}
                     styleReference={data.feedbackStyles?.[group.module] ?? ""}
                     onSaveStyle={(reference) => saveFeedbackStyle(group.module, reference)}
@@ -1971,31 +1952,6 @@ export default function App() {
           </div>
         </Modal>
       )}
-      {manualCopy !== null && (
-        <Modal
-          title="手动复制反馈"
-          subtitle="浏览器暂时无法自动复制，请选中以下内容后复制。"
-          onClose={() => setManualCopy(null)}
-        >
-          <label className="field">
-            反馈内容
-            <textarea
-              readOnly
-              rows={10}
-              value={manualCopy}
-              onFocus={(event) => event.currentTarget.select()}
-            />
-          </label>
-          <div className="form-actions">
-            <button
-              className="button button-primary"
-              onClick={() => setManualCopy(null)}
-            >
-              完成
-            </button>
-          </div>
-        </Modal>
-      )}
       {toast && (
         <div
           className={`toast ${toast.error ? "toast-error" : ""}`}
@@ -2008,7 +1964,7 @@ export default function App() {
           </button>
         </div>
       )}
-      {saving && (
+      {blockingSave && (
         <div className="saving-shield" role="status" aria-live="polite">
           <div>正在保存到本机数据库…</div>
         </div>

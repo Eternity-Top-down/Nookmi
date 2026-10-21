@@ -1,5 +1,6 @@
 import type { FeedbackSession, ModuleId } from "./types";
-import { hasBriefContent } from "./feedbackModel";
+import { hasBriefContent, hasFeedbackContent } from "./feedbackModel";
+import { emptyFeedbackEntry } from "./data";
 
 export interface FeedbackDraftRecord {
   session: FeedbackSession;
@@ -81,6 +82,9 @@ function validRecord(value: unknown, scope: string): value is FeedbackDraftRecor
   const session = value.session;
   if (!object(session) || !id(session.id) ||
     !stringFields(session, ["lessonAt", "createdAt", "updatedAt"]) ||
+    // Keep incomplete numeric edits locally (including 0 for an empty input); validate before saving to the database.
+    (session.lessonNumber !== undefined && (typeof session.lessonNumber !== "number" || !Number.isFinite(session.lessonNumber))) ||
+    (session.title !== undefined && typeof session.title !== "string") ||
     !Array.isArray(session.entries) ||
     (Object.hasOwn(session, "brief") && session.brief !== undefined && !validBrief(session.brief))) return false;
   try {
@@ -200,6 +204,82 @@ export function removeFeedbackDraft(
   }
 }
 
+/** Clear one student's feedback without removing the student from the class roster. */
+export function clearStudentFeedbackDraft(
+  scope: string, sessionId: string, studentId: string, sessionRemains: boolean,
+  adapter?: FeedbackDraftStorage,
+): FeedbackDraftResult {
+  if (!validScope(scope) || !id(sessionId) || !id(studentId)) return fail("无法清理本次反馈：目标无效。");
+  try {
+    const storage = getStorage(adapter);
+    if (!storage) return SUCCESS;
+    const key = recordKey(scope, sessionId);
+    const raw = storage.getItem(key);
+    if (raw === null) return SUCCESS;
+    const record = parseStored(raw, scope, key);
+    if (!record) return fail("本机恢复草稿无法读取，未删除或覆盖原数据。");
+    const entries = record.session.entries.map((entry) => entry.studentId === studentId ? emptyFeedbackEntry(studentId) : entry);
+    const session = { ...record.session, entries };
+    if (!hasFeedbackContent(session)) return removeFeedbackDraft(scope, sessionId, storage);
+    let baselineSnapshot = "";
+    if (sessionRemains) {
+      try {
+        const baseline: unknown = JSON.parse(record.baselineSnapshot);
+        if (object(baseline) && Array.isArray(baseline.entries) && baseline.entries.every((entry) => object(entry) && id(entry.studentId))) {
+          const normalized = baseline.entries.map((entry) => entry.studentId === studentId ? emptyFeedbackEntry(studentId) : entry);
+          if (!normalized.some((entry) => entry.studentId === studentId)) normalized.push(emptyFeedbackEntry(studentId));
+          baselineSnapshot = JSON.stringify({ ...baseline, entries: normalized });
+        }
+      } catch { /* Unknown baselines retain conflict protection. */ }
+    }
+    return writeFeedbackDraft(scope, { ...record, session, baselineSnapshot }, storage);
+  } catch (cause) {
+    return fail(storageError(cause, "清理"));
+  }
+}
+
+/** Local cleanup is a prerequisite: a failed cleanup must never commit a database deletion.
+ * If persistence fails, restore the exact recovery bytes without overwriting a newer local edit.
+ */
+export async function deleteFeedbackWithDraftRecovery(options: {
+  scope: string;
+  sessionId: string;
+  studentId?: string;
+  sessionRemains?: boolean;
+  persist: () => Promise<boolean>;
+  storage?: FeedbackDraftStorage;
+}): Promise<FeedbackDraftResult & { recovery?: FeedbackDraftRecord }> {
+  const { scope, sessionId, studentId, persist } = options;
+  if (!validScope(scope) || !id(sessionId) || (studentId !== undefined && !id(studentId))) return fail("无法删除反馈：教学目标或反馈记录无效。");
+  let storage: FeedbackDraftStorage | null;
+  let original: string | null;
+  const key = recordKey(scope, sessionId);
+  try {
+    storage = getStorage(options.storage);
+    original = storage?.getItem(key) ?? null;
+    if (original !== null && !parseStored(original, scope, key)) return fail("本机恢复草稿无法读取，数据库中的反馈尚未删除。");
+  } catch (cause) {
+    return fail(`反馈尚未删除。${storageError(cause, "读取")}`);
+  }
+  const cleaned = studentId
+    ? clearStudentFeedbackDraft(scope, sessionId, studentId, options.sessionRemains ?? true, storage ?? undefined)
+    : removeFeedbackDraft(scope, sessionId, storage ?? undefined);
+  if (!cleaned.ok) return fail(`反馈尚未删除。${cleaned.error}`);
+  let cleanedBytes: string | null = null;
+  try { cleanedBytes = storage?.getItem(key) ?? null; } catch { /* Rollback below still retains the original bytes. */ }
+  let saved = false;
+  try { saved = await persist(); } catch { /* Restore local recovery before returning a failure. */ }
+  if (saved) return SUCCESS;
+  if (storage && original !== null) {
+    try {
+      if (storage.getItem(key) === cleanedBytes) storage.setItem(key, original);
+    } catch (cause) {
+      return { ...fail(`数据库删除未完成，本机草稿恢复失败。${storageError(cause, "保存")}`), recovery: parseStored(original, scope, key) ?? undefined };
+    }
+  }
+  return { ok: false, error: null };
+}
+
 /** Use only for explicit backup restoration or target deletion; do not evict unsaved drafts. */
 export function clearFeedbackDrafts(
   scope?: string,
@@ -228,19 +308,23 @@ export function pruneStudentFeedbackDrafts(
   classId: string | null,
   studentId: string,
   adapter?: FeedbackDraftStorage,
+  sessionId?: string,
 ): FeedbackDraftResult {
   if (!id(studentId)) return fail("无法清理已删除学生的本机草稿：学生目标无效。");
+  if (sessionId !== undefined && !id(sessionId)) return fail("无法清理本机草稿：反馈记录无效。");
   let scope: string;
   try {
     scope = feedbackDraftScope(module, classId, module === "one-to-one" ? studentId : null);
   } catch {
     return fail("无法清理已删除学生的本机草稿：教学目标无效。");
   }
-  if (module === "one-to-one") return clearFeedbackDrafts(scope, adapter);
+  if (module === "one-to-one") return sessionId
+    ? removeFeedbackDraft(scope, sessionId, adapter) : clearFeedbackDrafts(scope, adapter);
 
   const result = readFeedbackDrafts(scope, adapter);
   const errors = result.error ? [result.error] : [];
   for (const record of result.drafts) {
+    if (sessionId !== undefined && record.session.id !== sessionId) continue;
     const entries = record.session.entries.filter((entry) => entry.studentId !== studentId);
     if (!entries.length && !hasBriefContent(record.session.brief)) {
       const removed = removeFeedbackDraft(scope, record.session.id, adapter);

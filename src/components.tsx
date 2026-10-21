@@ -41,6 +41,10 @@ const GRADES = [
 const IMPORT_SAMPLE =
   "姓名\t年级\t学校\t家长\t联系电话\t备注\n示例学生甲\t初一\t示例中学\t\t\t关注计算习惯\n示例学生乙\t初一\t示例中学\t\t\t";
 
+const modalStack: HTMLDivElement[] = [];
+let pageOverflowBeforeModals = "";
+let pageFocusBeforeModals: HTMLElement | null = null;
+
 export function Modal({
   title,
   subtitle,
@@ -61,19 +65,27 @@ export function Modal({
   closeRef.current = onClose;
 
   useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
     const previousFocus =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    const previousOverflow = document.body.style.overflow;
+    if (!modalStack.length) {
+      pageOverflowBeforeModals = document.body.style.overflow;
+      pageFocusBeforeModals = previousFocus;
+    }
+    modalStack.push(dialog);
     document.body.style.overflow = "hidden";
     const frame = requestAnimationFrame(() => {
+      if (modalStack.at(-1) !== dialog) return;
       const initial = dialogRef.current?.querySelector<HTMLElement>(
         'input:not([type="file"]):not([disabled]), textarea:not([disabled]), select:not([disabled]), [data-autofocus]',
       );
       (initial ?? dialogRef.current)?.focus();
     });
     const handleKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || modalStack.at(-1) !== dialog) return;
       if (event.key === "Escape") {
         event.preventDefault();
         closeRef.current();
@@ -110,9 +122,18 @@ export function Modal({
     document.addEventListener("keydown", handleKey);
     return () => {
       cancelAnimationFrame(frame);
-      document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKey);
-      if (previousFocus?.isConnected) previousFocus.focus();
+      const wasTop = modalStack.at(-1) === dialog;
+      const index = modalStack.indexOf(dialog);
+      if (index >= 0) modalStack.splice(index, 1);
+      const remaining = modalStack.at(-1);
+      if (!remaining) document.body.style.overflow = pageOverflowBeforeModals;
+      if (wasTop) {
+        if (previousFocus?.isConnected && (!remaining || remaining.contains(previousFocus))) previousFocus.focus();
+        else if (remaining) remaining.focus();
+        else if (pageFocusBeforeModals?.isConnected) pageFocusBeforeModals.focus();
+      }
+      if (!remaining) pageFocusBeforeModals = null;
     };
   }, []);
 

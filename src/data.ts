@@ -11,6 +11,8 @@ import {
   type StudentObservations,
   type TeachingNote,
 } from "./types";
+import { isValidLessonNumber } from "./feedback";
+import { emptyObservations } from "./feedbackModel";
 
 export const STORAGE_KEY = "nookmi:data:v1";
 export const EMPTY_DATA: AppData = {
@@ -604,6 +606,15 @@ export function parseBackup(text: string): AppData {
       const brief = Object.hasOwn(row, "brief")
         ? feedbackBrief(row.brief)
         : undefined;
+      const lessonNumber = row.lessonNumber;
+      if (lessonNumber !== undefined && lessonNumber !== null &&
+        (row.module !== "one-to-one" || !isValidLessonNumber(lessonNumber)))
+        throw new Error("一对一课次须为 1 至 9999 的整数，晚辅和班课不能填写课次");
+      let title: string | undefined;
+      if (row.title !== undefined && row.title !== null) {
+        if (row.module !== "one-to-one") throw new Error("自定义反馈标题仅适用于一对一");
+        title = string(row.title, "反馈标题", 300);
+      }
       if (row.module === "one-to-one" && entries.length !== 1)
         throw new Error("一对一课程反馈必须包含目标学生的一条反馈");
       if (!entries.some(hasEntryText) && !hasBriefText(brief))
@@ -614,6 +625,8 @@ export function parseBackup(text: string): AppData {
         classId,
         studentId,
         lessonAt: localDateTime(row.lessonAt, "上课时间"),
+        ...(isValidLessonNumber(lessonNumber) ? { lessonNumber } : {}),
+        ...(title !== undefined ? { title } : {}),
         entries,
         ...(brief ? { brief } : {}),
         createdAt: timestamp(row.createdAt, "课程反馈创建时间"),
@@ -622,6 +635,23 @@ export function parseBackup(text: string): AppData {
     });
   }
   return result;
+}
+
+/** Remove exactly one history record, or only one student's part of that record. */
+export function removeFeedbackRecord(sessions: FeedbackSession[], sessionId: string, studentId?: string): FeedbackSession[] {
+  return sessions.flatMap((session) => {
+    if (session.id !== sessionId) return [session];
+    if (!studentId) return [];
+    if (session.module === "one-to-one") return session.studentId === studentId ? [] : [session];
+    if (!session.entries.some((entry) => entry.studentId === studentId)) return [session];
+    const entries = session.entries.map((entry) => entry.studentId === studentId ? emptyFeedbackEntry(studentId) : entry);
+    return entries.some(hasEntryText) || hasBriefText(session.brief) ? [{ ...session, entries }] : [];
+  });
+}
+
+/** Clearing one feedback keeps its still-enrolled student in the editor's canonical empty shape. */
+export function emptyFeedbackEntry(studentId: string): FeedbackEntry {
+  return { studentId, content: "", reviewed: false, generationSource: "manual", observations: emptyObservations() };
 }
 
 export function pruneFeedbackForStudent(

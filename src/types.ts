@@ -69,6 +69,8 @@ export interface FeedbackSession {
   classId: string | null;
   studentId: string | null;
   lessonAt: string;
+  lessonNumber?: number;
+  title?: string;
   entries: FeedbackEntry[];
   brief?: FeedbackBrief;
   createdAt: string;

@@ -197,13 +197,30 @@ class FeedbackSession(OptionalFieldsModel):
     classId: Identifier | None
     studentId: Identifier | None
     lessonAt: LessonTime
+    lessonNumber: Annotated[StrictInt, Field(ge=1, le=9999)] | None = None
+    title: Annotated[Text, Field(max_length=300)] | None = None
     entries: Annotated[list[FeedbackEntry], Field(max_length=50_000)]
     brief: FeedbackBrief | None = None
     createdAt: Timestamp
     updatedAt: Timestamp
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_null(cls, value: object) -> object:
+        # Missing/null title metadata is legacy-compatible. Normalize null to
+        # omission, while retaining the existing null rules for every other field.
+        if isinstance(value, dict):
+            null_metadata = {key for key in ("lessonNumber", "title") if key in value and value[key] is None}
+            if null_metadata:
+                value = {key: item for key, item in value.items() if key not in null_metadata}
+        return super().reject_explicit_null(value)
+
     @model_validator(mode="after")
     def validate_entries(self) -> Self:
+        if self.lessonNumber is not None and self.module != "one-to-one":
+            raise PydanticCustomError("lesson_number_module", "课程次数仅适用于一对一反馈")
+        if self.title is not None and self.module != "one-to-one":
+            raise PydanticCustomError("feedback_title_module", "自定义标题仅适用于一对一反馈")
         ids = [entry.studentId for entry in self.entries]
         if len(set(ids)) != len(ids):
             raise ValueError("同一次课程反馈中存在重复学生")

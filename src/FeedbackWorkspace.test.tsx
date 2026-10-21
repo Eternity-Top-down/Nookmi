@@ -204,9 +204,10 @@ describe("feedback workspace local draft recovery", () => {
     expect(html).toContain("本机尚未同步的二次函数课程内容");
     expect(html).toContain("第二位独立画出抛物线");
     expect(labeledTextareas(html).find(({ label }) => label === "第二位同学的家长反馈正文")?.value).toBe("第二位尚未同步的家长反馈正文");
-    expect(html).not.toContain("第一位的本机正文");
+    expect(html).toContain("第一位的本机正文");
     expect(html).toContain('value="数学、 物理，"');
-    expect(html).toMatch(/<button[^>]*aria-current="true"[^>]*>[\s\S]*?<strong>第二位同学<\/strong>/);
+    expect(html).toContain('aria-label="第二位同学的反馈工作区"');
+    expect(html).not.toContain('aria-label="选择反馈学生"');
     expect(html).toContain("已恢复上次留在本机的反馈草稿");
     expect(html).not.toContain("数据库中的这份反馈已变更");
     expect(readFeedbackDrafts(scope).drafts).toEqual([record]);

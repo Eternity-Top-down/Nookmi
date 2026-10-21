@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDemoData,
   EMPTY_DATA,
+  emptyFeedbackEntry,
   loadData,
   parseBackup,
   parseStudentImport,
   pruneFeedbackForStudent,
+  removeFeedbackRecord,
   saveData,
   STORAGE_KEY,
   validateStudent,
@@ -459,6 +461,47 @@ describe("course feedback backups", () => {
     expect(decode(data)).toEqual(data);
     data.feedbackSessions[1].entries[1].content = " \n ";
     expect(decode(data)).toEqual(data);
+  });
+
+  it("round-trips one-to-one lesson numbers and leaves old backup shapes unchanged", () => {
+    const data = feedbackFixture();
+    expect(Object.hasOwn(decode(data).feedbackSessions![0], "lessonNumber")).toBe(false);
+    for (const lessonNumber of [1, 8, 9999]) {
+      data.feedbackSessions[0].lessonNumber = lessonNumber;
+      expect(decode(data)).toEqual(data);
+    }
+    const nullable = feedbackFixture();
+    expect(decode({ ...nullable, feedbackSessions: nullable.feedbackSessions.map((item) => ({ ...item, lessonNumber: null })) })).toEqual(nullable);
+  });
+
+  it("rejects invalid lesson numbers and lesson numbers on grouped feedback", () => {
+    const data = feedbackFixture();
+    for (const lessonNumber of [0, -1, 1.5, 10000, "8", true, {}, []]) {
+      expect(() => decode({ ...data, feedbackSessions: [{ ...data.feedbackSessions[0], lessonNumber }] })).toThrow("课次");
+    }
+    for (const group of data.feedbackSessions.slice(1)) {
+      expect(() => decode({ ...data, feedbackSessions: [{ ...group, lessonNumber: 8 }] })).toThrow("晚辅和班课不能填写课次");
+    }
+  });
+
+  it("round-trips editable one-to-one titles and normalizes null titles in old backups", () => {
+    const data = feedbackFixture();
+    for (const title of ["亦琳第9次数学课（10.21）", "", "字".repeat(300)]) {
+      data.feedbackSessions[0].title = title;
+      expect(decode(data)).toEqual(data);
+    }
+    const old = feedbackFixture();
+    expect(decode({ ...old, feedbackSessions: old.feedbackSessions.map((item) => ({ ...item, title: null })) })).toEqual(old);
+  });
+
+  it("rejects malformed or oversized titles and titles on group feedback", () => {
+    const data = feedbackFixture();
+    for (const title of [123, true, {}, [], "字".repeat(301)]) {
+      expect(() => decode({ ...data, feedbackSessions: [{ ...data.feedbackSessions[0], title }] })).toThrow("反馈标题");
+    }
+    for (const group of data.feedbackSessions.slice(1)) {
+      for (const title of ["", "标题"]) expect(() => decode({ ...data, feedbackSessions: [{ ...group, title }] })).toThrow("标题仅适用于一对一");
+    }
   });
 
   it.each([
@@ -915,6 +958,35 @@ describe("structured feedback draft backups", () => {
 });
 
 describe("feedback cleanup when deleting a student", () => {
+  it("deletes only the selected historical session and leaves every other session intact", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    const before = structuredClone(sessions);
+    expect(removeFeedbackRecord(sessions, sessions[0].id)).toEqual(sessions.slice(1));
+    expect(removeFeedbackRecord(sessions, "unknown")).toEqual(sessions);
+    expect(sessions).toEqual(before);
+  });
+
+  it("clears personal history to the canonical empty entry while preserving classmates and other periods", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    sessions[1].entries[1].content = "其他同学的正文";
+    const before = structuredClone(sessions);
+    const result = removeFeedbackRecord(sessions, sessions[1].id, "evening-student-1");
+    expect(result[1].entries).toEqual([emptyFeedbackEntry("evening-student-1"), sessions[1].entries[1]]);
+    expect(result[0]).toBe(sessions[0]);
+    expect(result[2]).toBe(sessions[2]);
+    expect(sessions).toEqual(before);
+    expect(removeFeedbackRecord(sessions, sessions[1].id, "missing")).toEqual(sessions);
+  });
+
+  it("removes a now-empty personal history session but retains useful shared course information", () => {
+    const sessions = feedbackFixture().feedbackSessions;
+    expect(removeFeedbackRecord(sessions, sessions[1].id, "evening-student-1").map((item) => item.id)).not.toContain(sessions[1].id);
+    sessions[1].brief = briefFixture();
+    const result = removeFeedbackRecord(sessions, sessions[1].id, "evening-student-1");
+    expect(result[1].entries[0]).toEqual(emptyFeedbackEntry("evening-student-1"));
+    expect(result[1].brief).toEqual(sessions[1].brief);
+  });
+
   it("removes the student's one-to-one sessions and preserves unrelated feedback", () => {
     const sessions = feedbackFixture().feedbackSessions;
     const result = pruneFeedbackForStudent(sessions, student.id);

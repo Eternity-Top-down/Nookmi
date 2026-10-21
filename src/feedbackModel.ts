@@ -7,11 +7,19 @@ import type {
 } from "./types";
 import { isValidLessonAt } from "./feedback";
 
-/** Resolve the anonymous model placeholder locally; never apply to saved or handwritten text. */
+import { friendlyStudentName } from "./studentAddress";
+
+/** Personalize only a new AI response, never saved/handwritten text or the roster label.
+ * Literal full-name matching avoids changing other names or isolated surname characters.
+ */
 export function prepareGeneratedFeedback(content: unknown, studentName: string): string {
   if (typeof content !== "string" || !content.trim() || content.length > 10000)
     throw new Error("AI 返回内容为空或过长，请重试。");
-  const personalized = content.split("【学生】").join(studentName).trim();
+  const name = studentName.trim();
+  if (!name) throw new Error("学生姓名为空，请先完善学生资料。");
+  const address = friendlyStudentName(name);
+  const addressed = address !== name ? content.split(name).join(address) : content;
+  const personalized = addressed.split("【学生】").join(address).trim();
   if (!personalized || personalized.length > 10000)
     throw new Error("AI 返回内容替换称呼后过长，请改用简短篇幅重试。");
   return personalized;
@@ -321,6 +329,8 @@ export function feedbackSnapshot(session: FeedbackSession): string {
     lessonAt: session.lessonAt,
     brief: session.brief,
     entries: session.entries,
+    lessonNumber: session.lessonNumber,
+    title: session.title,
   });
 }
 

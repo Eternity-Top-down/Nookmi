@@ -2,8 +2,6 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Check,
   CheckCheck,
-  ChevronRight,
-  Clock3,
   Copy,
   FileText,
   LoaderCircle,
@@ -17,14 +15,21 @@ import {
 import { ApiError, generateFeedback } from "./api";
 import { Modal } from "./components";
 import FeedbackStyleReference from "./FeedbackStyleReference";
+import FeedbackHistory from "./FeedbackHistory";
+import FeedbackWordExport from "./FeedbackWordExport";
 import { feedbackDraftScope, readFeedbackDrafts, writeFeedbackDraft, removeFeedbackDraft, type FeedbackDraftRecord } from "./feedbackDrafts";
 import { newId } from "./data";
 import {
   copyFeedbackText,
   currentLocalLessonAt,
+  defaultOneToOneTitle,
+  existingOneToOneTitle,
   formatClassFeedback,
   formatFeedbackPeriod,
   formatStudentFeedback,
+  getOneToOneTitle,
+  isValidLessonNumber,
+  updateOneToOneTitleDate,
 } from "./feedback";
 import {
   canApplyGeneration,
@@ -62,6 +67,7 @@ interface FeedbackWorkspaceProps {
   className?: string;
   sessions: FeedbackSession[];
   onSave: (session: FeedbackSession, automatic?: boolean) => Promise<boolean>;
+  onDelete?: (session: FeedbackSession) => void;
   autoSaveBlocked?: boolean;
   styleReference?: string;
   onSaveStyle?: (reference: string) => Promise<boolean>;
@@ -140,12 +146,38 @@ function sourceSignature(session: FeedbackSession, student: Student, styleRefere
     styleReference,
   );
 }
+function withoutInvalidLegacyNumber(session: FeedbackSession): FeedbackSession {
+  if (session.module !== "one-to-one" || session.lessonNumber === undefined || isValidLessonNumber(session.lessonNumber)) return session;
+  const normalized = { ...session };
+  delete normalized.lessonNumber;
+  return normalized;
+}
+
+export function prepareFeedbackSave(session: FeedbackSession, students: Student[], sessions: FeedbackSession[]): FeedbackSession {
+  const current = withoutInvalidLegacyNumber(session);
+  const student = students.find((item) => item.id === current.studentId);
+  return { ...current,
+    ...(current.module === "one-to-one" && student ? { title: current.title ?? getOneToOneTitle(current, student, sessions) } : {}),
+    entries: students.map((item) => entryFor(current, item.id)),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** A first save may add a legacy title; preserve any newer title typed in the old body. */
+export function withSavedTitle(session: FeedbackSession, saved?: FeedbackSession, student?: Student): FeedbackSession {
+  session = withoutInvalidLegacyNumber(session);
+  if (session.module !== "one-to-one" || session.title !== undefined || saved?.title === undefined) return session;
+  const bodyTitle = student ? existingOneToOneTitle(session.entries.find((entry) => entry.studentId === student.id)?.content.trim() ?? "", student) : null;
+  const submittedBodyTitle = student ? existingOneToOneTitle(saved.entries.find((entry) => entry.studentId === student.id)?.content.trim() ?? "", student) : null;
+  return { ...session, title: bodyTitle && bodyTitle !== submittedBodyTitle ? bodyTitle : saved.title };
+}
 function makeDraft(
   module: ModuleId,
   students: Student[],
   classId: string | null,
   studentId: string | null,
   saved?: FeedbackSession,
+  sessions: FeedbackSession[] = [],
 ): FeedbackSession {
   const now = new Date().toISOString();
   const brief = saved?.brief
@@ -155,7 +187,7 @@ function makeDraft(
         students.map((student) => student.grade),
         saved ? new Date(saved.lessonAt) : new Date(),
       );
-  return normalizeOneToOneTasks({
+  const draft = withoutInvalidLegacyNumber(normalizeOneToOneTasks({
     ...(saved ?? {
       id: newId(),
       module,
@@ -183,7 +215,10 @@ function makeDraft(
         observations: normalizeObservations(prior?.observations),
       };
     }),
-  });
+  }));
+  const student = students.find((item) => item.id === studentId);
+  return !saved && module === "one-to-one" && student
+    ? { ...draft, title: defaultOneToOneTitle(draft, student, sessions) } : draft;
 }
 export default function FeedbackWorkspace({
   module,
@@ -193,6 +228,7 @@ export default function FeedbackWorkspace({
   className,
   sessions,
   onSave,
+  onDelete,
   styleReference = "",
   onSaveStyle,
   onDirtyChange,
@@ -210,13 +246,14 @@ export default function FeedbackWorkspace({
     const record = readonly ? undefined : cached.drafts.find((item) =>
       feedbackSnapshot(item.session) !== item.baselineSnapshot || sessions.some((session) => session.id === item.session.id));
     const remote = record ? sessions.find((session) => session.id === record.session.id) : orderedSessions[0];
-    const remoteDraft = remote ? makeDraft(module, students, classId, studentId, remote) : undefined;
+    const remoteDraft = remote ? makeDraft(module, students, classId, studentId, remote, sessions) : undefined;
     const remoteSnapshot = remoteDraft ? feedbackSnapshot(remoteDraft) : "";
     const pending = record && feedbackSnapshot(record.session) !== record.baselineSnapshot;
-    const alreadySaved = record && remoteSnapshot === feedbackSnapshot(record.session);
+    const comparableRecord = record && withSavedTitle(record.session, remote, students.find((item) => item.id === record.session.studentId));
+    const alreadySaved = comparableRecord && remoteSnapshot === feedbackSnapshot(comparableRecord);
     const restored = record && (pending || remoteSnapshot === record.baselineSnapshot);
-    const session = restored ? makeDraft(module, students, classId, studentId, record.session)
-      : remoteDraft ?? makeDraft(module, students, classId, studentId, orderedSessions[0]);
+    const session = restored ? makeDraft(module, students, classId, studentId, alreadySaved ? comparableRecord : record.session, sessions)
+      : remoteDraft ?? makeDraft(module, students, classId, studentId, orderedSessions[0], sessions);
     return {
       session, baseline: restored ? alreadySaved ? remoteSnapshot : record.baselineSnapshot : remote ? feedbackSnapshot(session) : "",
       selectedId: restored && students.some((student) => student.id === record.selectedId) ? record.selectedId : students[0]?.id ?? "",
@@ -224,8 +261,9 @@ export default function FeedbackWorkspace({
       restored: Boolean(restored && pending && !alreadySaved), conflict: Boolean(restored && pending && !alreadySaved && remoteSnapshot !== record.baselineSnapshot),
       drafts: cached.drafts.map((item) => {
         const saved = sessions.find((entry) => entry.id === item.session.id);
-        const snapshot = saved ? feedbackSnapshot(makeDraft(module, students, classId, studentId, saved)) : "";
-        return snapshot === feedbackSnapshot(item.session) ? { ...item, baselineSnapshot: snapshot } : item;
+        const snapshot = saved ? feedbackSnapshot(makeDraft(module, students, classId, studentId, saved, sessions)) : "";
+        const comparable = withSavedTitle(item.session, saved, students.find((student) => student.id === item.session.studentId));
+        return snapshot === feedbackSnapshot(comparable) ? { ...item, session: comparable, baselineSnapshot: snapshot } : item;
       }), error: cached.error,
       remoteSignature: remote ? JSON.stringify(remote) : "",
     };
@@ -249,7 +287,6 @@ export default function FeedbackWorkspace({
   const [saving, setSaving] = useState(false);
   const [copying, setCopying] = useState(false);
   const [needsConfiguration, setNeedsConfiguration] = useState(false);
-  const [historyLimit, setHistoryLimit] = useState(20);
   const [styleDirty, setStyleDirty] = useState(false);
   const [localDrafts, setLocalDrafts] = useState(initial.drafts);
   const [localError, setLocalError] = useState(initial.error);
@@ -287,8 +324,6 @@ export default function FeedbackWorkspace({
     (baseline !== "" || hasFeedbackContent(draft) || localDrafts.some((item) => item.session.id === draft.id));
   const selected =
     students.find((student) => student.id === selectedId) ?? students[0];
-  const selectedEntry = selected ? entryFor(draft, selected.id) : null;
-  const observations = normalizeObservations(selectedEntry?.observations);
   const filledCount = students.filter((student) =>
     entryFor(draft, student.id).content.trim(),
   ).length;
@@ -300,14 +335,6 @@ export default function FeedbackWorkspace({
     const entry = entryFor(draft, student.id);
     return !entry.content.trim() && hasPersonalFacts(entry.observations);
   });
-  const currentSignature = selected
-    ? sourceSignature(draft, selected, selectedEntry?.generationSource === "outline" ? "" : styleReference)
-    : "";
-  const stale = Boolean(
-    selectedEntry &&
-      !selectedEntry.reviewed &&
-      entryIsStale(selectedEntry, currentSignature),
-  );
   const periodName =
     module === "one-to-one" ? "本次" : module === "evening" ? "本周" : "本月";
   const title =
@@ -318,6 +345,21 @@ export default function FeedbackWorkspace({
         : "班课月反馈";
   const activeBrief = draft.brief!;
   const isOneToOne = module === "one-to-one";
+  const feedbackTitle = isOneToOne && selected ? draft.title ?? getOneToOneTitle(draft, selected, sessions) : "";
+  const titleError = feedbackTitleIssue(draft);
+
+  function feedbackTitleIssue(session: FeedbackSession): string | null {
+    if (session.module !== "one-to-one") return null;
+    const student = studentsRef.current.find((item) => item.id === session.studentId);
+    const value = student ? session.title ?? getOneToOneTitle(session, student, sessions) : "";
+    return value.trim() && value.length <= 300
+      ? null : "请填写反馈标题（最多 300 字）。当前填写已保留，补全后再保存或复制。";
+  }
+
+  function changeTitle(value: string) {
+    setStatus(null);
+    updateDraft((current) => ({ ...current, title: value }));
+  }
 
   function cacheDraft(session: FeedbackSession, base = baselineRef.current) {
     if (readonly) return false;
@@ -331,11 +373,6 @@ export default function FeedbackWorkspace({
     return result.ok;
   }
 
-  function selectStudent(id: string) {
-    selectedIdRef.current = id;
-    setSelectedId(id);
-    cacheDraft(draftRef.current);
-  }
 
   function updateDraft(updater: (current: FeedbackSession) => FeedbackSession) {
     const next = updater(draftRef.current);
@@ -386,11 +423,11 @@ export default function FeedbackWorkspace({
     });
   }
   function changeObservation(
+    targetId: string,
     key: Exclude<keyof StudentObservations, "subjects">,
     value: string,
   ) {
-    if (!selected) return;
-    changeEntry(selected.id, (entry) => ({
+    changeEntry(targetId, (entry) => ({
       ...entry,
       observations: {
         ...normalizeObservations(entry.observations),
@@ -408,6 +445,9 @@ export default function FeedbackWorkspace({
     else setStatus(null);
     updateDraft((current) => ({
       ...current,
+      ...(isOneToOne && lessonAt !== undefined && selected ? {
+        title: updateOneToOneTitleDate(getOneToOneTitle(current, selected, sessions), current.lessonAt, lessonAt),
+      } : {}),
       lessonAt: lessonAt ?? current.lessonAt,
       brief: { ...current.brief!, ...change },
       entries: current.entries.map((entry) => ({ ...entry, reviewed: false })),
@@ -422,15 +462,17 @@ export default function FeedbackWorkspace({
     entryVersions.current.clear();
     const local = session && readFeedbackDrafts(scope).drafts.find((item) => item.session.id === session.id);
     const remote = session && sessions.find((item) => item.id === session.id);
-    const remoteBaseline = remote ? feedbackSnapshot(makeDraft(module, studentsRef.current, classId, studentId, remote)) : "";
-    const alreadySaved = local && feedbackSnapshot(local.session) === remoteBaseline;
+    const remoteBaseline = remote ? feedbackSnapshot(makeDraft(module, studentsRef.current, classId, studentId, remote, sessions)) : "";
+    const comparableLocal = local && withSavedTitle(local.session, remote, studentsRef.current.find((item) => item.id === local.session.studentId));
+    const alreadySaved = comparableLocal && feedbackSnapshot(comparableLocal) === remoteBaseline;
     const recover = local && (feedbackSnapshot(local.session) !== local.baselineSnapshot || alreadySaved);
     const next = makeDraft(
       module,
       studentsRef.current,
       classId,
       studentId,
-      recover ? local.session : session,
+      recover ? alreadySaved ? comparableLocal : local.session : session,
+      sessions,
     );
     draftRef.current = next;
     setDraft(next);
@@ -462,6 +504,13 @@ export default function FeedbackWorkspace({
         action: () => loadSession(session),
       });
     } else loadSession(session);
+  }
+  function requestDelete(session: FeedbackSession) {
+    if (progress || (controller.current && !controller.current.signal.aborted)) {
+      setStatus({ text: "请先停止当前生成，再删除历史反馈。已完成的内容会保留。", error: true });
+      return;
+    }
+    onDelete?.(session);
   }
   useEffect(() => {
     dirtyCallback.current?.((dirty && Boolean(localError)) || styleDirty || Boolean(progress));
@@ -516,6 +565,8 @@ export default function FeedbackWorkspace({
     const current = draftRef.current;
     const brief = current.brief!;
     const contextErrors = feedbackInputErrors({ module, brief }, { lessonAt: current.lessonAt });
+    const currentTitleError = feedbackTitleIssue(current);
+    if (currentTitleError) contextErrors.push(currentTitleError);
     if (contextErrors.length) {
       setStatus({ text: contextErrors.join(" "), error: true });
       return false;
@@ -537,16 +588,14 @@ export default function FeedbackWorkspace({
     return true;
   }
   function snapshotForSave(): FeedbackSession {
-    return {
-      ...draftRef.current,
-      entries: studentsRef.current.map((student) =>
-        entryFor(draftRef.current, student.id),
-      ),
-      updatedAt: new Date().toISOString(),
-    };
+    return prepareFeedbackSave(draftRef.current, studentsRef.current, sessions);
   }
   async function save(automatic = false) {
     if (readonly || saveLock.current || recoveryConflict || autoSaveBlocked) return;
+    if (feedbackTitleIssue(draftRef.current)) {
+      if (!automatic) setStatus({ text: feedbackTitleIssue(draftRef.current)!, error: true });
+      return;
+    }
     if (!automatic && !validateContext()) return;
     const saved = snapshotForSave();
     if (!hasFeedbackContent(saved)) {
@@ -568,13 +617,14 @@ export default function FeedbackWorkspace({
         // A slow save must not erase text typed after the request started,
         // including when the teacher has already switched to another lesson.
         const pending = readFeedbackDrafts(scope).drafts.find((item) => item.session.id === saved.id);
-        if (pending && feedbackSnapshot(pending.session) === submitted &&
+        const pendingSession = pending && withSavedTitle(pending.session, saved, studentsRef.current.find((item) => item.id === pending.session.studentId));
+        if (pending && pendingSession && feedbackSnapshot(pendingSession) === submitted &&
           pending.subjectText === submittedSubjectText && pending.selectedId === submittedSelection) {
           const removed = removeFeedbackDraft(scope, saved.id);
           if (!removed.ok) setLocalError(removed.error);
           else setLocalDrafts((prior) => prior.filter((item) => item.session.id !== saved.id));
         } else if (pending) {
-          const acknowledged = { ...pending, baselineSnapshot: submitted };
+          const acknowledged = { ...pending, session: pendingSession!, baselineSnapshot: submitted };
           const result = writeFeedbackDraft(scope, acknowledged);
           if (!result.ok) setLocalError(result.error);
           else setLocalDrafts((prior) => prior.map((item) => item.session.id === saved.id ? acknowledged : item));
@@ -588,7 +638,7 @@ export default function FeedbackWorkspace({
         setAutoSaveError(false);
         const current = draftRef.current;
         const next = {
-          ...current,
+          ...withSavedTitle(current, saved, studentsRef.current.find((item) => item.id === current.studentId)),
           entries: studentsRef.current.map((student) =>
             entryFor(current, student.id),
           ),
@@ -629,6 +679,7 @@ export default function FeedbackWorkspace({
   const saveRef = useRef(save);
   saveRef.current = save;
   const inputErrors = feedbackInputErrors({ module, brief: activeBrief }, { lessonAt: draft.lessonAt });
+  if (titleError) inputErrors.push(titleError);
   for (const entry of draft.entries) {
     inputErrors.push(...feedbackInputErrors({ module, brief: activeBrief, observations: entry.observations }));
     if (entry.content.length > 10000) inputErrors.push("反馈正文不能超过 10000 字，请精简正文。");
@@ -886,14 +937,282 @@ export default function FeedbackWorkspace({
     ? canApplyGeneration(proposal.revision, revision(proposal.student.id)) &&
       students.some((student) => student.id === proposal.student.id)
     : false;
-  const subjectFields = [
-    ...new Set([
-      ...activeBrief.subjects,
-      ...Object.entries(observations.subjects)
-        .filter(([, value]) => value.trim())
-        .map(([subject]) => subject),
-    ]),
-  ];
+
+
+  function renderStudentPanels(selected: Student) {
+    const selectedEntry = entryFor(draft, selected.id);
+    const observations = normalizeObservations(selectedEntry.observations);
+    const currentSignature = sourceSignature(draft, selected, selectedEntry.generationSource === "outline" ? "" : styleReference);
+    const stale = !selectedEntry.reviewed && entryIsStale(selectedEntry, currentSignature);
+    const subjectFields = [...new Set([...activeBrief.subjects,
+      ...Object.entries(observations.subjects).filter(([, value]) => value.trim()).map(([subject]) => subject)])];
+    return (<>
+              <section className="fb-facts">
+                <div className="fb-panel-title">
+                  <div>
+                    <h3>
+                      {isOneToOne ? <>{selected.name} <span>本节课记录</span></> : "简短记录"}
+                    </h3>
+                    <p>只写你实际了解的情况，不必组织成完整段落。</p>
+                  </div>
+                </div>
+                <label className="field fb-observation">
+                  {isOneToOne ? "课堂状态与掌握情况" : "学生情况"}
+                  <small>短句记下能独立做什么、卡在哪里、提示后怎样；亮点、困难和建议可以写在一起，有观察的再写。</small>
+                  <textarea
+                    aria-label={`${selected.name}的${isOneToOne ? "课堂状态与掌握情况" : "学生情况"}`}
+                    rows={4}
+                    value={observations.performance}
+                    maxLength={2000}
+                    readOnly={readonly}
+                    placeholder={module === "one-to-one"
+                      ? "如：数列基础题能独立做，能提取条件但不会变形；提示用哪个公式后能继续，讲解后能自己订正。"
+                      : module === "evening"
+                        ? "如：作业按时完成，后半段容易聊天；数学方程会套公式，因式分解不熟；物理电路图经提示能分析。"
+                        : "如：集合基础题能独立做，多选题容易漏情况；不等式变形找不到切入点，稍作提示后能继续推导。"}
+                    onChange={(event) =>
+                      changeObservation(selected.id, "performance", event.target.value)
+                    }
+                  />
+                </label>
+                <details
+                  className="fb-optional"
+                  key={`${draft.id}-${selected.id}-details`}
+                  open={Boolean(observations.strengths || observations.difficulties || observations.plan)}
+                >
+                  <summary>补充细节（选填）</summary>
+                  {OBSERVATION_FIELDS.filter((item) => item.key !== "performance").map((item) => (
+                    <label className="field fb-observation" key={item.key}>
+                      {item.label}
+                      <textarea
+                        rows={1}
+                        value={observations[item.key]}
+                        maxLength={2000}
+                        readOnly={readonly}
+                        placeholder={item.placeholder}
+                        onChange={(event) =>
+                          changeObservation(selected.id, item.key, event.target.value)
+                        }
+                      />
+                    </label>
+                  ))}
+                </details>
+                {module === "evening" && subjectFields.length > 0 && (
+                  <div className="fb-subject-notes">
+                    <h4>
+                      分科情况 <span>有观察再写，空白科目不编写评价</span>
+                    </h4>
+                    {subjectFields.map((subject) => (
+                      <label className="field" key={subject}>
+                        {subject}
+                        <textarea
+                          rows={1}
+                          value={
+                            Object.hasOwn(observations.subjects, subject)
+                              ? observations.subjects[subject]
+                              : ""
+                          }
+                          maxLength={2000}
+                          readOnly={readonly}
+                          placeholder={`记录${subject}的具体学习情况`}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            changeEntry(selected.id, (entry) => {
+                              const notes = normalizeObservations(
+                                entry.observations,
+                              );
+                              const nextSubjects = {
+                                ...notes.subjects,
+                                [subject]: value,
+                              };
+                              if (!value) delete nextSubjects[subject];
+                              return {
+                                ...entry,
+                                observations: {
+                                  ...notes,
+                                  subjects: nextSubjects,
+                                },
+                                reviewed: false,
+                              };
+                            });
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                )}
+                {isOneToOne ? (
+                  <label className="field fb-observation">
+                    课后任务 <small>选填，填写本节课实际布置的作业或复习安排</small>
+                    <textarea
+                      rows={2}
+                      value={observations.tasks}
+                      maxLength={8000}
+                      readOnly={readonly}
+                      placeholder="如：完成讲义第 3 页第 1—4 题，订正今天的两道错题。未布置可留空。"
+                      onChange={(event) => changeObservation(selected.id, "tasks", event.target.value)}
+                    />
+                  </label>
+                ) : <details
+                  className="fb-optional"
+                  open={Boolean(observations.tasks)}
+                >
+                  <summary>
+                    个人任务 <span>仅这位学生的安排，选填</span>
+                  </summary>
+                  <label className="field">
+                    <span className="sr-only">个人任务</span>
+                    <textarea
+                      rows={2}
+                      value={observations.tasks}
+                      maxLength={8000}
+                      readOnly={readonly}
+                      placeholder="如需单独安排练习，在这里补充。"
+                      onChange={(event) =>
+                        changeObservation(selected.id, "tasks", event.target.value)
+                      }
+                    />
+                  </label>
+                </details>}
+                {!hasPersonalFacts(observations) && (
+                  <p className="fb-field-note">
+                    填写一条实际表现、亮点、困难或分科情况后，即可生成。建议和任务不会被当作已发生的事实。
+                  </p>
+                )}
+                {!activeBrief.teachingContent.trim() &&
+                  hasPersonalFacts(observations) && (
+                    <p className="fb-field-note">
+                      {isOneToOne
+                        ? "未填写本节课教学内容，生成时将只依据已记录的课堂情况。"
+                        : "未填写共用教学内容，生成时将只依据已记录的个人情况。"}
+                    </p>
+                  )}
+                {!readonly && (
+                  <div className="fb-generate-actions">
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      disabled={
+                        Boolean(progress) || styleDirty || !hasPersonalFacts(observations)
+                      }
+                      onClick={() => requestGenerate(selected)}
+                    >
+                      <Sparkles size={16} />
+                      {selectedEntry.content.trim()
+                        ? "重新生成候选"
+                        : "AI 生成反馈"}
+                    </button>
+                    <button
+                      type="button"
+                      className="button button-ghost button-sm"
+                      disabled={
+                        Boolean(progress) || !hasObservations(observations)
+                      }
+                      onClick={() => organize(selected)}
+                    >
+                      <WandSparkles size={15} />
+                      按原始记录整理草稿
+                    </button>
+                    <small>整理草稿不调用 AI，不添加未记录的事实。</small>
+                  </div>
+                )}
+                {styleDirty && <p className="fb-field-note">风格参考有未保存修改，请先保存或撤销，再使用 AI 生成。</p>}
+                {failures.has(selected.id) && (
+                  <p className="fb-inline-error" role="alert">
+                    {failures.get(selected.id)}
+                  </p>
+                )}
+              </section>
+              <section className="fb-output">
+                <div className="fb-panel-title">
+                  <div>
+                    <h3>发给家长的反馈</h3>
+                    <p>可以直接手写，也可以编辑生成后的正文。</p>
+                  </div>
+                  <span className="fb-source-badge">
+                    {selectedEntry.generationSource === "ai"
+                      ? "AI 草稿"
+                      : selectedEntry.generationSource === "outline"
+                        ? "原始记录整理"
+                        : "自由编辑"}
+                  </span>
+                </div>
+                {stale && (
+                  <div className="fb-stale" role="status">
+                    生成依据已更新，正文仍保留旧内容。请重新生成，或修改并再次核对。
+                  </div>
+                )}
+                {isOneToOne && <label className="field fb-feedback-title-input">
+                  反馈标题 <small>可直接修改，复制时会带上</small>
+                  <input aria-label="反馈标题" value={feedbackTitle} maxLength={300} readOnly={readonly}
+                    aria-invalid={Boolean(titleError)} aria-describedby={titleError ? `${fieldId}-title-error` : undefined}
+                    onChange={(event) => changeTitle(event.target.value)} />
+                  {titleError && <span id={`${fieldId}-title-error`} className="fb-inline-error">{titleError}</span>}
+                </label>}
+                <label
+                  className="field fb-output-field"
+                  htmlFor={`${fieldId}-${selected.id}-content`}
+                >
+                  <span className="sr-only">{selected.name}的家长反馈正文</span>
+                  <textarea
+                    id={`${fieldId}-${selected.id}-content`}
+                    rows={isOneToOne ? 17 : 8}
+                    maxLength={10000}
+                    readOnly={readonly}
+                    value={selectedEntry.content}
+                    placeholder="家长反馈会显示在这里。你也可以直接手写，已有内容不会被生成结果直接覆盖。"
+                    onChange={(event) => {
+                      const content = event.target.value;
+                      changeEntry(selected.id, (entry) => ({
+                        ...entry,
+                        content,
+                        reviewed: false,
+                        generationSource: "manual",
+                      }));
+                    }}
+                  />
+                </label>
+                <div className="fb-output-count">
+                  {selectedEntry.content.length} / 10000 字
+                </div>
+                <label className="fb-review-check">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(selectedEntry.reviewed)}
+                    disabled={readonly || !selectedEntry.content.trim()}
+                    onChange={(event) => {
+                      const reviewed = event.target.checked;
+                      changeEntry(selected.id, (entry) => ({
+                        ...entry,
+                        reviewed,
+                      }));
+                    }}
+                  />
+                  <span>
+                    已核对事实与措辞，可以发给家长
+                    <small>修改记录或正文后，需要重新核对。</small>
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  className="button button-secondary fb-copy-button"
+                  disabled={
+                    !selectedEntry.reviewed ||
+                    !selectedEntry.content.trim() ||
+                    copying
+                  }
+                  onClick={() => void copy(selected)}
+                >
+                  <Copy size={16} />
+                  复制 {selected.name} 的反馈
+                </button>
+                <p className="fb-field-note">
+                  只复制到剪贴板，由你决定何时、发给哪位家长。
+                </p>
+              </section>
+            </>
+    );
+  }
 
   return (
     <section className="fb-workspace" aria-label="反馈工作区">
@@ -930,7 +1249,9 @@ export default function FeedbackWorkspace({
           )}
         </div>
       </div>
-      <div className={`fb-status ${localError || recoveryConflict || autoSaveBlocked ? "fb-status-error" : ""}`} role="status" aria-live="polite">
+      <div className={`fb-status ${localError || recoveryConflict || autoSaveBlocked || autoSaveError ? "fb-status-error" : ""}`}
+        role={localError || recoveryConflict || autoSaveBlocked || autoSaveError ? "status" : undefined}
+        aria-live={localError || recoveryConflict || autoSaveBlocked || autoSaveError ? "polite" : "off"}>
         <Save size={16} /><span>{saveStatus}</span>
       </div>
       {initial.restored && <p className="fb-field-note">已恢复上次留在本机的反馈草稿，可以继续编辑。</p>}
@@ -987,25 +1308,25 @@ export default function FeedbackWorkspace({
         </div>
         <div className="fb-context-row">
           {module === "one-to-one" ? (
-            <label className="field">
-              上课时间
-              <input
-                type="datetime-local"
-                value={draft.lessonAt}
-                min="1900-01-01T00:00"
-                max="2100-12-31T23:59"
-                readOnly={readonly}
-                onChange={(event) =>
-                  changeBrief(
-                    {
-                      periodStart: event.target.value.slice(0, 10),
-                      periodEnd: event.target.value.slice(0, 10),
-                    },
-                    event.target.value,
-                  )
-                }
-              />
-            </label>
+              <label className="field">
+                上课时间
+                <input
+                  type="datetime-local"
+                  value={draft.lessonAt}
+                  min="1900-01-01T00:00"
+                  max="2100-12-31T23:59"
+                  readOnly={readonly}
+                  onChange={(event) =>
+                    changeBrief(
+                      {
+                        periodStart: event.target.value.slice(0, 10),
+                        periodEnd: event.target.value.slice(0, 10),
+                      },
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
           ) : (
             <div className="fb-date-range">
               <label className="field">
@@ -1163,7 +1484,7 @@ export default function FeedbackWorkspace({
       <div className="fb-work-heading">
         <div>
           <h3>
-            <span>02</span>{isOneToOne ? "本节课表现与课后安排" : "记录个人情况，核对家长反馈"}
+            <span>02</span>{isOneToOne ? "本节课表现与课后安排" : "全班反馈，在这里一起完成"}
           </h3>
           <p>
             {isOneToOne
@@ -1211,308 +1532,19 @@ export default function FeedbackWorkspace({
           <p>{isOneToOne ? "进入学生页面，即可记录这节课并生成反馈。" : "学生加入后，就可以逐一补充真实情况并生成反馈。"}</p>
         </div>
       ) : (
-        <div
-          className={`fb-composer ${module === "one-to-one" ? "fb-one-student" : ""}`}
-        >
-          {module !== "one-to-one" && (
-            <nav className="fb-roster" aria-label="选择反馈学生">
-              <div className="fb-roster-heading">
-                学生名单 <span>{students.length} 人</span>
-              </div>
-              {students.map((student) => {
-                const entry = entryFor(draft, student.id);
-                const state = failures.has(student.id)
-                  ? "生成待重试"
-                  : entry.content.trim()
-                    ? entry.reviewed
-                      ? "已核对"
-                      : "待核对"
-                    : hasObservations(entry.observations)
-                      ? "已记录"
-                      : "待记录";
-                return (
-                  <button
-                    type="button"
-                    key={student.id}
-                    className={`fb-roster-item ${student.id === selected?.id ? "fb-roster-active" : ""}`}
-                    aria-current={
-                      student.id === selected?.id ? "true" : undefined
-                    }
-                    onClick={() => selectStudent(student.id)}
-                  >
-                    <span>
-                      <strong>{student.name}</strong>
-                      <small>{student.grade || "未设置年级"}</small>
-                    </span>
-                    <span
-                      className={`fb-roster-state ${entry.reviewed ? "fb-reviewed" : ""}`}
-                    >
-                      {state}
-                    </span>
-                  </button>
-                );
-              })}
-            </nav>
-          )}
-          {selected && selectedEntry && (
-            <>
-              <section className="fb-facts">
-                <div className="fb-panel-title">
-                  <div>
-                    <h3>
-                      {selected.name} <span>{isOneToOne ? "本节课记录" : "个人记录"}</span>
-                    </h3>
-                    <p>只写你实际了解的情况，不必组织成完整段落。</p>
-                  </div>
-                </div>
-                <label className="field fb-observation">
-                  {isOneToOne ? "课堂状态与掌握情况" : "学生情况"}
-                  <small>短句记下能独立做什么、卡在哪里、提示后怎样；亮点、困难和建议可以写在一起，有观察的再写。</small>
-                  <textarea
-                    rows={4}
-                    value={observations.performance}
-                    maxLength={2000}
-                    readOnly={readonly}
-                    placeholder={module === "one-to-one"
-                      ? "如：数列基础题能独立做，能提取条件但不会变形；提示用哪个公式后能继续，讲解后能自己订正。"
-                      : module === "evening"
-                        ? "如：作业按时完成，后半段容易聊天；数学方程会套公式，因式分解不熟；物理电路图经提示能分析。"
-                        : "如：集合基础题能独立做，多选题容易漏情况；不等式变形找不到切入点，稍作提示后能继续推导。"}
-                    onChange={(event) =>
-                      changeObservation("performance", event.target.value)
-                    }
-                  />
-                </label>
-                <details
-                  className="fb-optional"
-                  key={`${draft.id}-${selected.id}-details`}
-                  open={Boolean(observations.strengths || observations.difficulties || observations.plan)}
-                >
-                  <summary>补充细节（选填）</summary>
-                  {OBSERVATION_FIELDS.filter((item) => item.key !== "performance").map((item) => (
-                    <label className="field fb-observation" key={item.key}>
-                      {item.label}
-                      <textarea
-                        rows={1}
-                        value={observations[item.key]}
-                        maxLength={2000}
-                        readOnly={readonly}
-                        placeholder={item.placeholder}
-                        onChange={(event) =>
-                          changeObservation(item.key, event.target.value)
-                        }
-                      />
-                    </label>
-                  ))}
-                </details>
-                {module === "evening" && subjectFields.length > 0 && (
-                  <div className="fb-subject-notes">
-                    <h4>
-                      分科情况 <span>有观察再写，空白科目不编写评价</span>
-                    </h4>
-                    {subjectFields.map((subject) => (
-                      <label className="field" key={subject}>
-                        {subject}
-                        <textarea
-                          rows={1}
-                          value={
-                            Object.hasOwn(observations.subjects, subject)
-                              ? observations.subjects[subject]
-                              : ""
-                          }
-                          maxLength={2000}
-                          readOnly={readonly}
-                          placeholder={`记录${subject}的具体学习情况`}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            changeEntry(selected.id, (entry) => {
-                              const notes = normalizeObservations(
-                                entry.observations,
-                              );
-                              const nextSubjects = {
-                                ...notes.subjects,
-                                [subject]: value,
-                              };
-                              if (!value) delete nextSubjects[subject];
-                              return {
-                                ...entry,
-                                observations: {
-                                  ...notes,
-                                  subjects: nextSubjects,
-                                },
-                                reviewed: false,
-                              };
-                            });
-                          }}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                )}
-                {isOneToOne ? (
-                  <label className="field fb-observation">
-                    课后任务 <small>选填，填写本节课实际布置的作业或复习安排</small>
-                    <textarea
-                      rows={2}
-                      value={observations.tasks}
-                      maxLength={8000}
-                      readOnly={readonly}
-                      placeholder="如：完成讲义第 3 页第 1—4 题，订正今天的两道错题。未布置可留空。"
-                      onChange={(event) => changeObservation("tasks", event.target.value)}
-                    />
-                  </label>
-                ) : <details
-                  className="fb-optional"
-                  open={Boolean(observations.tasks)}
-                >
-                  <summary>
-                    个人任务 <span>仅这位学生的安排，选填</span>
-                  </summary>
-                  <label className="field">
-                    <span className="sr-only">个人任务</span>
-                    <textarea
-                      rows={2}
-                      value={observations.tasks}
-                      maxLength={8000}
-                      readOnly={readonly}
-                      placeholder="如需单独安排练习，在这里补充。"
-                      onChange={(event) =>
-                        changeObservation("tasks", event.target.value)
-                      }
-                    />
-                  </label>
-                </details>}
-                {!hasPersonalFacts(observations) && (
-                  <p className="fb-field-note">
-                    填写一条实际表现、亮点、困难或分科情况后，即可生成。建议和任务不会被当作已发生的事实。
-                  </p>
-                )}
-                {!activeBrief.teachingContent.trim() &&
-                  hasPersonalFacts(observations) && (
-                    <p className="fb-field-note">
-                      {isOneToOne
-                        ? "未填写本节课教学内容，生成时将只依据已记录的课堂情况。"
-                        : "未填写共用教学内容，生成时将只依据已记录的个人情况。"}
-                    </p>
-                  )}
-                {!readonly && (
-                  <div className="fb-generate-actions">
-                    <button
-                      type="button"
-                      className="button button-primary"
-                      disabled={
-                        Boolean(progress) || styleDirty || !hasPersonalFacts(observations)
-                      }
-                      onClick={() => requestGenerate(selected)}
-                    >
-                      <Sparkles size={16} />
-                      {selectedEntry.content.trim()
-                        ? "重新生成候选"
-                        : "AI 生成反馈"}
-                    </button>
-                    <button
-                      type="button"
-                      className="button button-ghost button-sm"
-                      disabled={
-                        Boolean(progress) || !hasObservations(observations)
-                      }
-                      onClick={() => organize(selected)}
-                    >
-                      <WandSparkles size={15} />
-                      按原始记录整理草稿
-                    </button>
-                    <small>整理草稿不调用 AI，不添加未记录的事实。</small>
-                  </div>
-                )}
-                {styleDirty && <p className="fb-field-note">风格参考有未保存修改，请先保存或撤销，再使用 AI 生成。</p>}
-                {failures.has(selected.id) && (
-                  <p className="fb-inline-error" role="alert">
-                    {failures.get(selected.id)}
-                  </p>
-                )}
-              </section>
-              <section className="fb-output">
-                <div className="fb-panel-title">
-                  <div>
-                    <h3>发给家长的反馈</h3>
-                    <p>可以直接手写，也可以编辑生成后的正文。</p>
-                  </div>
-                  <span className="fb-source-badge">
-                    {selectedEntry.generationSource === "ai"
-                      ? "AI 草稿"
-                      : selectedEntry.generationSource === "outline"
-                        ? "原始记录整理"
-                        : "自由编辑"}
-                  </span>
-                </div>
-                {stale && (
-                  <div className="fb-stale" role="status">
-                    生成依据已更新，正文仍保留旧内容。请重新生成，或修改并再次核对。
-                  </div>
-                )}
-                <label
-                  className="field fb-output-field"
-                  htmlFor={`${fieldId}-content`}
-                >
-                  <span className="sr-only">{selected.name}的家长反馈正文</span>
-                  <textarea
-                    id={`${fieldId}-content`}
-                    rows={17}
-                    maxLength={10000}
-                    readOnly={readonly}
-                    value={selectedEntry.content}
-                    placeholder="家长反馈会显示在这里。你也可以直接手写，已有内容不会被生成结果直接覆盖。"
-                    onChange={(event) => {
-                      const content = event.target.value;
-                      changeEntry(selected.id, (entry) => ({
-                        ...entry,
-                        content,
-                        reviewed: false,
-                        generationSource: "manual",
-                      }));
-                    }}
-                  />
-                </label>
-                <div className="fb-output-count">
-                  {selectedEntry.content.length} / 10000 字
-                </div>
-                <label className="fb-review-check">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(selectedEntry.reviewed)}
-                    disabled={readonly || !selectedEntry.content.trim()}
-                    onChange={(event) => {
-                      const reviewed = event.target.checked;
-                      changeEntry(selected.id, (entry) => ({
-                        ...entry,
-                        reviewed,
-                      }));
-                    }}
-                  />
-                  <span>
-                    已核对事实与措辞，可以发给家长
-                    <small>修改记录或正文后，需要重新核对。</small>
-                  </span>
-                </label>
-                <button
-                  type="button"
-                  className="button button-secondary fb-copy-button"
-                  disabled={
-                    !selectedEntry.reviewed ||
-                    !selectedEntry.content.trim() ||
-                    copying
-                  }
-                  onClick={() => void copy(selected)}
-                >
-                  <Copy size={16} />
-                  复制 {selected.name} 的反馈
-                </button>
-                <p className="fb-field-note">
-                  只复制到剪贴板，由你决定何时、发给哪位家长。
-                </p>
-              </section>
-            </>
-          )}
+        <div className={isOneToOne ? "fb-composer fb-one-student" : "fb-class-workspace"}>
+          {isOneToOne ? selected && renderStudentPanels(selected) : students.map((student) => {
+            const entry = entryFor(draft, student.id);
+            const state = failures.has(student.id) ? "生成待重试" : entry.content.trim()
+              ? entry.reviewed ? "已核对" : "待核对" : hasObservations(entry.observations) ? "已记录" : "待记录";
+            return <article className="fb-student-card" key={student.id} aria-label={`${student.name}的反馈工作区`}>
+              <header className="fb-student-card-heading">
+                <div><h3>{student.name}</h3><span>{student.grade || "未设置年级"}</span></div>
+                <span className={`fb-student-status ${entry.reviewed ? "fb-reviewed" : ""}`}>{state}</span>
+              </header>
+              <div className="fb-student-panels">{renderStudentPanels(student)}</div>
+            </article>;
+          })}
         </div>
       )}
       <div className="fb-savebar">
@@ -1524,6 +1556,7 @@ export default function FeedbackWorkspace({
           <span>{saving ? "保存中" : dirty ? "本机草稿待同步" : "草稿可随时继续补充"}</span>
         </p>
         <div>
+          {!isOneToOne && <FeedbackWordExport session={draft} students={students} className={className} />}
           {module !== "one-to-one" && (
             <button
               type="button"
@@ -1557,71 +1590,18 @@ export default function FeedbackWorkspace({
           )}
         </div>
       </div>
-      {localDrafts.some((item) => feedbackSnapshot(item.session) !== item.baselineSnapshot) && <details className="fb-history" open>
+      {localDrafts.some((item) => item.session.id !== draft.id && feedbackSnapshot(item.session) !== item.baselineSnapshot) && <details className="fb-history" open>
         <summary><span><Save size={17} />本机未同步草稿</span></summary>
         <div className="fb-history-list">
-          {localDrafts.filter((item) => feedbackSnapshot(item.session) !== item.baselineSnapshot).map((item) => <button
+          {localDrafts.filter((item) => item.session.id !== draft.id && feedbackSnapshot(item.session) !== item.baselineSnapshot).map((item) => <button
             type="button" key={item.session.id} className={`fb-history-item ${item.session.id === draft.id ? "fb-history-active" : ""}`}
             onClick={() => requestSession(item.session)}>
             <strong>{formatFeedbackPeriod(item.session) || "日期待填写"}</strong><span>本机已保留 · 点击继续填写</span>
           </button>)}
         </div>
       </details>}
-      <details className="fb-history">
-        <summary>
-          <span>
-            <Clock3 size={17} />
-            历史反馈 <strong>{orderedSessions.length} 次 · 最近编辑优先</strong>
-          </span>
-          <ChevronRight size={16} />
-        </summary>
-        {orderedSessions.length ? (
-          <>
-            <div className="fb-history-list">
-              {orderedSessions.slice(0, historyLimit).map((session) => (
-                <button
-                  type="button"
-                  key={session.id}
-                  className={`fb-history-item ${session.id === draft.id ? "fb-history-active" : ""}`}
-                  onClick={() => requestSession(session)}
-                >
-                  <strong>{formatFeedbackPeriod(session)}</strong>
-                  <span>
-                    {isOneToOne ? (
-                      session.entries[0]?.content.trim()
-                        ? (session.entries[0].reviewed ? "已核对" : "待核对")
-                        : "已记录，待完成正文"
-                    ) : <>{
-                      session.entries.filter((entry) => entry.content.trim())
-                        .length
-                    }{" "}
-                    人有正文 ·{" "}
-                    {
-                      session.entries.filter(
-                        (entry) => entry.reviewed && entry.content.trim(),
-                      ).length
-                    }{" "}
-                    人已核对</>}
-                  </span>
-                </button>
-              ))}
-            </div>
-            {historyLimit < orderedSessions.length && (
-              <button
-                type="button"
-                className="button button-ghost button-sm fb-more"
-                onClick={() => setHistoryLimit((limit) => limit + 20)}
-              >
-                查看更多历史
-              </button>
-            )}
-          </>
-        ) : (
-          <p className="fb-history-empty">
-            保存后，可以在这里回到之前的课程或周期继续补写。
-          </p>
-        )}
-      </details>
+      <FeedbackHistory sessions={sessions} students={students} className={className}
+        currentSessionId={draft.id} onEdit={readonly ? undefined : requestSession} onDelete={readonly || !onDelete ? undefined : requestDelete} />
       {confirmation && (
         <Modal title={confirmation.title} onClose={() => setConfirmation(null)}>
           <p className="confirm-message">{confirmation.message}</p>

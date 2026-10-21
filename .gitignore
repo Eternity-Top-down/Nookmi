@@ -11,6 +11,7 @@ coverage/
 playwright-report/
 test-results/
 .local/
+.tmp/
 .venv/
 __pycache__/
 *.py[cod]

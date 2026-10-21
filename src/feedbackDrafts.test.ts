@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearFeedbackDrafts,
+  clearStudentFeedbackDraft,
+  deleteFeedbackWithDraftRecovery,
   feedbackDraftScope,
   pruneStudentFeedbackDrafts,
   readFeedbackDrafts,
@@ -10,6 +12,7 @@ import {
   type FeedbackDraftStorage,
 } from "./feedbackDrafts";
 import { defaultBrief, emptyObservations, feedbackSnapshot } from "./feedbackModel";
+import { emptyFeedbackEntry, removeFeedbackRecord } from "./data";
 import type { ModuleId } from "./types";
 
 class MemoryStorage implements FeedbackDraftStorage {
@@ -49,6 +52,26 @@ const scopeOf = (value: FeedbackDraftRecord) =>
 afterEach(() => vi.unstubAllGlobals());
 
 describe("feedback recovery storage", () => {
+  it("preserves a cleared or unfinished title without dropping the rest of the local draft", () => {
+    for (const title of ["", "亦琳第9次数学课（10.21）", "字".repeat(301)]) {
+      const storage = new MemoryStorage();
+      const draft = record();
+      draft.session.title = title;
+      expect(writeFeedbackDraft(scopeOf(draft), draft, storage).ok).toBe(true);
+      expect(readFeedbackDrafts(scopeOf(draft), storage)).toEqual({ drafts: [draft], error: null });
+    }
+  });
+
+  it("preserves unfinished lesson numbers locally so a refresh cannot discard a partially edited course", () => {
+    for (const lessonNumber of [0, -1, 1.5, 10000, 8]) {
+      const storage = new MemoryStorage();
+      const draft = record();
+      draft.session.lessonNumber = lessonNumber;
+      expect(writeFeedbackDraft(scopeOf(draft), draft, storage).ok).toBe(true);
+      expect(readFeedbackDrafts(scopeOf(draft), storage)).toEqual({ drafts: [draft], error: null });
+    }
+  });
+
   it("round-trips full unfinished content, including invalid dates, oversized text and raw subject input", () => {
     const storage = new MemoryStorage();
     const draft = record();
@@ -291,6 +314,85 @@ describe("deleted student recovery cleanup", () => {
     });
     return draft;
   }
+
+  it("clears a personal historical feedback without causing a false classmate draft conflict", () => {
+    const storage = new MemoryStorage();
+    const draft = classDraft();
+    const untouched = classDraft("evening", "another-period");
+    for (const item of [draft, untouched]) writeFeedbackDraft(scopeOf(item), item, storage);
+    const savedSession = { ...draft.session, ...JSON.parse(draft.baselineSnapshot) };
+    const remaining = removeFeedbackRecord([savedSession], draft.session.id, "student-1")[0];
+    expect(clearStudentFeedbackDraft(scopeOf(draft), draft.session.id, "student-1", true, storage).ok).toBe(true);
+    const restored = readFeedbackDrafts(scopeOf(draft), storage).drafts;
+    const next = restored.find((item) => item.session.id === draft.session.id)!;
+    expect(next.session.entries[0]).toEqual(emptyFeedbackEntry("student-1"));
+    expect(next.session.entries[1]).toEqual(draft.session.entries[1]);
+    expect(next.baselineSnapshot).toBe(feedbackSnapshot(remaining));
+    expect(feedbackSnapshot(next.session)).not.toBe(next.baselineSnapshot);
+    expect(restored.find((item) => item.session.id === untouched.session.id)).toEqual(untouched);
+  });
+
+  it("keeps classmates' unsaved input with an empty baseline if personal deletion removes the server session", () => {
+    const storage = new MemoryStorage();
+    const draft = classDraft();
+    writeFeedbackDraft(scopeOf(draft), draft, storage);
+    expect(clearStudentFeedbackDraft(scopeOf(draft), draft.session.id, "student-1", false, storage).ok).toBe(true);
+    const restored = readFeedbackDrafts(scopeOf(draft), storage).drafts[0];
+    expect(restored.baselineSnapshot).toBe("");
+    expect(restored.session.entries[1]).toEqual(draft.session.entries[1]);
+  });
+
+  it("does not delete from the database if local recovery cleanup fails", async () => {
+    const storage = new MemoryStorage();
+    const draft = record();
+    writeFeedbackDraft(scopeOf(draft), draft, storage);
+    const before = new Map(storage.data);
+    storage.removeItem = () => { throw new Error("blocked"); };
+    const persist = vi.fn(async () => true);
+    const result = await deleteFeedbackWithDraftRecovery({ scope: scopeOf(draft), sessionId: draft.session.id, persist, storage });
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("反馈尚未删除") });
+    expect(persist).not.toHaveBeenCalled();
+    expect(storage.data).toEqual(before);
+  });
+
+  it.each([false, "throw"])("restores exact recovery bytes when database deletion fails: %s", async (failure) => {
+    const storage = new MemoryStorage();
+    const draft = classDraft();
+    writeFeedbackDraft(scopeOf(draft), draft, storage);
+    const before = new Map(storage.data);
+    const result = await deleteFeedbackWithDraftRecovery({ scope: scopeOf(draft), sessionId: draft.session.id,
+      studentId: "student-1", sessionRemains: true, storage,
+      persist: async () => {
+        expect(readFeedbackDrafts(scopeOf(draft), storage).drafts[0].session.entries[0]).toEqual(emptyFeedbackEntry("student-1"));
+        if (failure === "throw") throw new Error("offline");
+        return false;
+      } });
+    expect(result.ok).toBe(false);
+    expect(storage.data).toEqual(before);
+  });
+
+  it("cleans only the target recovery record before a successful database deletion", async () => {
+    const storage = new MemoryStorage();
+    const target = record();
+    const unrelated = record("one-to-one", "student-1", "unrelated");
+    for (const draft of [target, unrelated]) writeFeedbackDraft(scopeOf(draft), draft, storage);
+    const result = await deleteFeedbackWithDraftRecovery({ scope: scopeOf(target), sessionId: target.session.id, storage,
+      persist: async () => {
+        expect(readFeedbackDrafts(scopeOf(target), storage).drafts).toEqual([unrelated]);
+        return true;
+      } });
+    expect(result).toEqual({ ok: true, error: null });
+    expect(readFeedbackDrafts(scopeOf(target), storage).drafts).toEqual([unrelated]);
+  });
+
+  it("returns a recoverable copy if both the database request and local rollback fail", async () => {
+    const storage = new MemoryStorage();
+    const draft = record();
+    writeFeedbackDraft(scopeOf(draft), draft, storage);
+    const result = await deleteFeedbackWithDraftRecovery({ scope: scopeOf(draft), sessionId: draft.session.id, storage,
+      persist: async () => { storage.setItem = () => { throw new Error("quota"); }; return false; } });
+    expect(result).toMatchObject({ ok: false, recovery: draft, error: expect.stringContaining("草稿恢复失败") });
+  });
 
   it.each(["evening", "course"] as const)("prunes only the deleted student's %s entries and baseline while preserving classmates' exact drafts", (module) => {
     const storage = new MemoryStorage();
