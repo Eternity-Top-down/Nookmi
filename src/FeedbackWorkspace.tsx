@@ -1309,7 +1309,7 @@ export default function FeedbackWorkspace({
         <div className="fb-context-row">
           {module === "one-to-one" ? (
               <label className="field">
-                上课时间
+                <span className="fb-field-label">上课时间</span>
                 <input
                   type="datetime-local"
                   value={draft.lessonAt}
@@ -1330,7 +1330,7 @@ export default function FeedbackWorkspace({
           ) : (
             <div className="fb-date-range">
               <label className="field">
-                周期开始
+                <span className="fb-field-label">周期开始</span>
                 <input
                   aria-label="周期开始"
                   type="date"
@@ -1348,7 +1348,7 @@ export default function FeedbackWorkspace({
               </label>
               <span>—</span>
               <label className="field">
-                周期结束
+                <span className="fb-field-label">周期结束</span>
                 <input
                   aria-label="周期结束"
                   type="date"
@@ -1364,7 +1364,7 @@ export default function FeedbackWorkspace({
             </div>
           )}
           <label className="field">
-            科目 <small>用顿号或逗号分隔，可修改</small>
+            <span className="fb-field-label">科目 <small>用顿号或逗号分隔，可修改</small></span>
             <input
               value={subjectText}
               maxLength={1000}
@@ -1392,7 +1392,7 @@ export default function FeedbackWorkspace({
             />
           </label>
           <label className="field fb-length">
-            反馈篇幅
+            <span className="fb-field-label">反馈篇幅</span>
             <select
               value={activeBrief.length}
               disabled={readonly}
@@ -1409,7 +1409,7 @@ export default function FeedbackWorkspace({
         </div>
         <div className={`fb-common-fields ${isOneToOne ? "fb-lesson-fields" : ""}`}>
           <label className="field">
-            {periodName}教学 / 学习内容 <small>选填</small>
+            <span className="fb-field-label">{periodName}教学 / 学习内容 <small>选填</small></span>
             <textarea
               rows={2}
               value={activeBrief.teachingContent}
@@ -1428,8 +1428,7 @@ export default function FeedbackWorkspace({
             />
           </label>
           {!isOneToOne && <label className="field">
-            {module === "course" ? "全班安排 / 共性提醒" : "共同课后任务"}{" "}
-            <small>选填</small>
+            <span className="fb-field-label">{module === "course" ? "全班安排 / 共性提醒" : "共同课后任务"} <small>选填</small></span>
             <textarea
               rows={2}
               value={activeBrief.commonTasks}
