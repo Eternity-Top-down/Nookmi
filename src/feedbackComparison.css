@@ -1,0 +1,48 @@
+.fb-comparison {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.fb-comparison > summary,
+.fb-comparison-records > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--green-dark);
+}
+.fb-comparison > summary { padding: 11px 13px; font-weight: 600; }
+.fb-comparison summary::-webkit-details-marker { display: none; }
+.fb-comparison summary:focus-visible { outline: 3px solid #92b9a4; outline-offset: -3px; }
+.fb-comparison > summary > span { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.fb-comparison > summary small { font-weight: 400; color: #65736c; }
+.fb-comparison summary > svg { flex-shrink: 0; transition: transform 120ms ease; }
+.fb-comparison[open] > summary > svg,
+.fb-comparison-records[open] > summary > svg { transform: rotate(90deg); }
+.fb-comparison-content { padding: 0 13px 13px; }
+.fb-comparison-meta { color: #65736c; font-size: 12px; line-height: 1.7; }
+.fb-comparison-notice { margin: 9px 0; padding: 9px 11px; border-radius: 7px; background: #f5f4ec; color: #615d39; font-size: 12px; }
+.fb-comparison-legend { display: flex; flex-wrap: wrap; gap: 8px 15px; margin: 9px 0; font-size: 12px; color: #65736c; }
+.fb-comparison del { background: #fce7e5; color: #963c35; text-decoration: line-through; text-decoration-thickness: 1px; }
+.fb-comparison ins { background: #e1f2e7; color: #255d3e; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.fb-comparison-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 10px; }
+.fb-comparison-columns > section { min-width: 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.fb-comparison-columns h4 { margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--line); background: #f8faf8; font-size: 13px; }
+.fb-comparison-text { padding: 11px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.9; font-size: 13px; }
+.fb-comparison-records { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 10px; }
+.fb-comparison-records > summary { font-size: 12px; justify-content: flex-start; }
+.fb-comparison-input { margin-top: 8px; padding: 10px 12px; border-radius: 7px; background: #f8faf8; }
+.fb-comparison-input dl { margin: 10px 0 0; }
+.fb-comparison-input dl > div + div { margin-top: 10px; }
+.fb-comparison-input dt { font-size: 12px; color: #65736c; }
+.fb-comparison-input dd { margin: 3px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.fb-comparison-footnote { margin-top: 12px; font-size: 12px; color: #65736c; overflow-wrap: anywhere; }
+.fb-comparison-footnote > span { display: block; margin-top: 3px; }
+@media (max-width: 760px) {
+  .fb-comparison-columns { grid-template-columns: minmax(0, 1fr); }
+  .fb-comparison-content { padding: 0 10px 10px; }
+}

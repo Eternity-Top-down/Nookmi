@@ -13,7 +13,7 @@ import {
 } from "./feedbackDrafts";
 import { defaultBrief, emptyObservations, feedbackSnapshot } from "./feedbackModel";
 import { emptyFeedbackEntry, removeFeedbackRecord } from "./data";
-import type { ModuleId } from "./types";
+import type { FeedbackAIDraft, ModuleId } from "./types";
 
 class MemoryStorage implements FeedbackDraftStorage {
   data = new Map<string, string>();
@@ -49,9 +49,72 @@ function record(module: ModuleId = "one-to-one", target = "student-1", sessionId
 const scopeOf = (value: FeedbackDraftRecord) =>
   feedbackDraftScope(value.session.module, value.session.classId, value.session.studentId);
 
+function sourceFor(draft: FeedbackDraftRecord): FeedbackAIDraft {
+  return {
+    id: "source-1", sessionId: draft.session.id, studentId: draft.session.entries[0].studentId,
+    content: "原始 AI 反馈", createdAt: draft.savedAt, model: "test-model",
+    input: {
+      module: draft.session.module, grade: "初二", lessonAt: draft.session.lessonAt,
+      brief: structuredClone(draft.session.brief!), observations: structuredClone(draft.session.entries[0].observations!),
+    },
+  };
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("feedback recovery storage", () => {
+  it("recovers the current AI original and most recent adoption while preserving unfinished new input", () => {
+    const storage = new MemoryStorage();
+    const draft = record();
+    const source = sourceFor(draft);
+    const entry = draft.session.entries[0];
+    entry.comparison = { source, finalContent: "之前采用的最终稿", finalInput: structuredClone(source.input), confirmedAt: draft.savedAt };
+    entry.aiDraft = { ...structuredClone(source), id: "new-source", content: "当前正在编辑的原稿" };
+    draft.session.lessonAt = "";
+    draft.session.brief!.periodStart = "";
+    entry.observations!.performance = "字".repeat(2001);
+    expect(writeFeedbackDraft(scopeOf(draft), draft, storage).ok).toBe(true);
+    expect(readFeedbackDrafts(scopeOf(draft), storage)).toEqual({ drafts: [draft], error: null });
+  });
+
+  it.each(["aiDraft", "comparison"])("retains corrupt %s bytes and refuses to overwrite them on recovery", (field) => {
+    const storage = new MemoryStorage();
+    const draft = record();
+    const entry = draft.session.entries[0];
+    const source = sourceFor(draft);
+    entry.aiDraft = source;
+    entry.comparison = { source: structuredClone(source), finalContent: "已采用稿", finalInput: structuredClone(source.input), confirmedAt: draft.savedAt };
+    const scope = scopeOf(draft);
+    expect(writeFeedbackDraft(scope, draft, storage).ok).toBe(true);
+    const key = storage.key(0)!;
+    const stored = JSON.parse(storage.getItem(key)!);
+    if (field === "aiDraft") stored.record.session.entries[0].aiDraft.sessionId = "wrong-session";
+    else stored.record.session.entries[0].comparison.source.studentId = "wrong-student";
+    const corrupt = JSON.stringify(stored);
+    storage.setItem(key, corrupt);
+    expect(readFeedbackDrafts(scope, storage).drafts).toEqual([]);
+    expect(readFeedbackDrafts(scope, storage).error).toContain("原数据已保留");
+    expect(writeFeedbackDraft(scope, draft, storage).ok).toBe(false);
+    expect(storage.getItem(key)).toBe(corrupt);
+  });
+
+  it("removes both archive and original from local draft and baseline when clearing a student's feedback", () => {
+    const storage = new MemoryStorage();
+    const draft = record("course", "class-1");
+    const source = sourceFor(draft);
+    draft.session.entries[0].aiDraft = source;
+    draft.session.entries[0].comparison = { source: structuredClone(source), finalContent: "已采用稿", finalInput: structuredClone(source.input), confirmedAt: draft.savedAt };
+    draft.session.entries.push({ studentId: "student-2", content: "另一位学生的反馈" });
+    draft.baselineSnapshot = JSON.stringify(draft.session);
+    const scope = scopeOf(draft);
+    expect(writeFeedbackDraft(scope, draft, storage).ok).toBe(true);
+    expect(clearStudentFeedbackDraft(scope, draft.session.id, "student-1", true, storage).ok).toBe(true);
+    const restored = readFeedbackDrafts(scope, storage).drafts[0];
+    expect(restored.session.entries[0]).toEqual(emptyFeedbackEntry("student-1"));
+    expect(JSON.parse(restored.baselineSnapshot).entries[0]).toEqual(emptyFeedbackEntry("student-1"));
+    expect(restored.session.entries[1]).toEqual(draft.session.entries[1]);
+  });
+
   it("preserves a cleared or unfinished title without dropping the rest of the local draft", () => {
     for (const title of ["", "亦琳第9次数学课（10.21）", "字".repeat(301)]) {
       const storage = new MemoryStorage();

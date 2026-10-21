@@ -37,7 +37,7 @@ def local_url(value: str, *, host_only: bool = False) -> bool:
 
 def create_app(data_dir: str | Path | None = None) -> FastAPI:
     directory = Path(data_dir or os.environ.get("NOOKMI_DATA_DIR") or Path(__file__).resolve().parents[2] / ".local")
-    app = FastAPI(title="Nookmi local API", version="0.11.0", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="Nookmi local API", version="0.12.0", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.database = Database(directory)
     app.state.settings = SettingsStore(directory)
     app.state.provider = AIProvider(app.state.settings)

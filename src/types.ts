@@ -42,6 +42,10 @@ export interface FeedbackEntry {
   reviewed?: boolean;
   generationSource?: "ai" | "manual" | "outline";
   generatedFrom?: string;
+  /** The single source behind the current editor text, retained for recovery. */
+  aiDraft?: FeedbackAIDraft;
+  /** The most recent explicitly adopted version; never a generation log. */
+  comparison?: FeedbackComparison;
 }
 
 export interface StudentObservations {
@@ -61,6 +65,31 @@ export interface FeedbackBrief {
   commonTasks: string;
   focus: string;
   length: "brief" | "standard";
+}
+
+export interface FeedbackInputSnapshot {
+  module: ModuleId;
+  grade: string;
+  lessonAt: string;
+  brief: FeedbackBrief;
+  observations: StudentObservations;
+}
+
+export interface FeedbackAIDraft {
+  id: string;
+  sessionId: string;
+  studentId: string;
+  content: string;
+  input: FeedbackInputSnapshot;
+  createdAt: string;
+  model: string;
+}
+
+export interface FeedbackComparison {
+  source: FeedbackAIDraft;
+  finalContent: string;
+  finalInput: FeedbackInputSnapshot;
+  confirmedAt: string;
 }
 
 export interface FeedbackSession {

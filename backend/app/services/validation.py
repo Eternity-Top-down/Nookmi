@@ -7,6 +7,7 @@ class FieldInfo:
     label: str
     limit: int | None = None
     kind: str = "text"
+    provenance: bool = False
 
 
 FIELDS = {
@@ -53,6 +54,44 @@ EXAM_FIELDS = {
 }
 
 
+def provenance_field_info(path: tuple) -> FieldInfo:
+    """Only trusted labels are used, including for arbitrary nested subject keys."""
+    root = path[0]
+    remaining = path[1:]
+    label = "当前 AI 原稿" if root == "aiDraft" else "已采用反馈的修改对比"
+    if root == "comparison" and remaining[:1] == ("source",):
+        label, remaining = "已采用反馈的 AI 原稿", remaining[1:]
+    if not remaining:
+        return FieldInfo(label, kind="object", provenance=True)
+    if remaining[:1] in (("input",), ("finalInput",)):
+        label = "生成时原始记录" if remaining[0] == "input" else "采用时原始记录"
+        remaining = remaining[1:]
+        if not remaining:
+            return FieldInfo(label, kind="object", provenance=True)
+        if remaining == ("lessonAt",):
+            return FieldInfo(f"{label}的上课时间", kind="lesson_time", provenance=True)
+        # Reuse field limits, but never expose user-supplied dictionary keys.
+        if remaining[:2] == ("brief", "subjects") and len(remaining) > 2:
+            info = FieldInfo("科目名称", 50)
+        elif remaining[:2] == ("observations", "subjects") and len(remaining) > 2:
+            info = FieldInfo("分学科科目名称", 50) if remaining[-1:] == ("[key]",) else FieldInfo("分学科记录内容", 2000)
+        else:
+            info = FIELDS.get(remaining)
+        return FieldInfo(f"{label}的{info.label}" if info else label, info.limit if info else None, info.kind if info else "object", True)
+    metadata = {
+        ("id",): FieldInfo("原稿标识", 128),
+        ("sessionId",): FieldInfo("所属反馈", 128),
+        ("studentId",): FieldInfo("所属学生", 128),
+        ("content",): FieldInfo("正文", 10000),
+        ("finalContent",): FieldInfo("最终稿正文", 10000),
+        ("model",): FieldInfo("模型名称", 200),
+        ("createdAt",): FieldInfo("生成时间", kind="timestamp"),
+        ("confirmedAt",): FieldInfo("确认采用时间", kind="timestamp"),
+    }
+    info = metadata.get(remaining)
+    return FieldInfo(f"{label}的{info.label}" if info else label, info.limit if info else None, info.kind if info else "object", True)
+
+
 def field_info(location: tuple) -> FieldInfo | None:
     # Never join the raw location: dictionary keys and unknown field names can
     # contain student details, pasted content, or credentials.
@@ -81,6 +120,8 @@ def field_info(location: tuple) -> FieldInfo | None:
         return FieldInfo("科目名称", 50)
     if path[:2] == ("observations", "subjects") and len(path) > 2:
         return FieldInfo("分学科记录的科目名称", 50) if path[-1:] == ("[key]",) else FieldInfo("分学科记录内容", 2000)
+    if path[:1] in (("aiDraft",), ("comparison",)):
+        return provenance_field_info(path)
     return FIELDS.get(path)
 
 
@@ -88,6 +129,19 @@ def validation_message(error: dict) -> str:
     code = error.get("type")
     info = field_info(tuple(error.get("loc", ())))
     label = f"「{info.label}」" if info else "该项信息"
+    if code == "feedback_provenance_scope":
+        return "修改对比记录与当前学生或反馈不一致，请重新载入工作台；本机草稿仍保留"
+    if code == "feedback_provenance_final":
+        return "当前反馈正文与已采用的最终稿不一致，请核对正文并重新确认采用；本机草稿仍保留"
+    if code == "feedback_provenance_null":
+        return "AI 原稿或修改对比记录不完整，请重新载入工作台；本机草稿仍保留"
+    if info and info.provenance:
+        if code in ("string_too_long", "too_long") and info.limit is not None:
+            limit = f"最多 {info.limit} 项" if info.kind in ("list", "object") else f"不能超过 {info.limit} 字"
+            return f"{label}{limit}，请检查恢复的记录；本机草稿仍保留"
+        if info.kind in ("date", "lesson_time", "timestamp"):
+            return f"{label}不是有效日期或时间，请检查恢复的记录；本机草稿仍保留"
+        return f"{label}不完整或格式已损坏，请重新载入工作台；本机草稿仍保留"
     if code == "json_invalid":
         return "请求内容不是有效的 JSON，请重新操作后重试"
     if code == "extra_forbidden":

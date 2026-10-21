@@ -237,7 +237,7 @@ export function hasFeedbackContent(session: FeedbackSession): boolean {
   );
 }
 
-/** Stable and compact provenance marker; no source notes are duplicated into backups. */
+/** Compact stale-input marker. Full comparison provenance is stored separately on the entry. */
 export function generationSignature(
   module: ModuleId,
   brief: FeedbackBrief,

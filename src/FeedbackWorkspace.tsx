@@ -16,6 +16,8 @@ import { ApiError, generateFeedback } from "./api";
 import { Modal } from "./components";
 import FeedbackStyleReference from "./FeedbackStyleReference";
 import FeedbackHistory from "./FeedbackHistory";
+import FeedbackComparisonView from "./FeedbackComparisonView";
+import { adoptGeneratedFeedback, captureFeedbackInput, cloneFeedbackAsNewSession, resumeFeedbackEditing, setFeedbackReviewed } from "./feedbackComparisonModel";
 import FeedbackWordExport from "./FeedbackWordExport";
 import FeedbackRosterTable from "./FeedbackRosterTable";
 import { feedbackDraftScope, readFeedbackDrafts, writeFeedbackDraft, removeFeedbackDraft, type FeedbackDraftRecord } from "./feedbackDrafts";
@@ -51,6 +53,7 @@ import {
   sortFeedbackByRecentEdit,
 } from "./feedbackModel";
 import type {
+  FeedbackAIDraft,
   FeedbackBrief,
   FeedbackEntry,
   FeedbackSession,
@@ -85,6 +88,7 @@ type Proposal = {
   signature: string;
   revision: Revision;
   reviewWarning?: string;
+  aiDraft?: FeedbackAIDraft;
 };
 type Confirmation = {
   title: string;
@@ -419,11 +423,13 @@ export default function FeedbackWorkspace({
     id: string,
     updater: (entry: FeedbackEntry) => FeedbackEntry,
     userEdit = true,
+    replaceOrigin = false,
   ) {
     if (userEdit)
       entryVersions.current.set(id, (entryVersions.current.get(id) ?? 0) + 1);
     updateDraft((current) => {
-      const next = updater(entryFor(current, id));
+      const previous = entryFor(current, id);
+      const next = updater(replaceOrigin ? previous : resumeFeedbackEditing(previous));
       const exists = current.entries.some((entry) => entry.studentId === id);
       return {
         ...current,
@@ -469,7 +475,7 @@ export default function FeedbackWorkspace({
       } : {}),
       lessonAt: lessonAt ?? current.lessonAt,
       brief: { ...current.brief!, ...change },
-      entries: current.entries.map((entry) => ({ ...entry, reviewed: false })),
+      entries: current.entries.map((entry) => ({ ...resumeFeedbackEditing(entry), reviewed: false })),
     }));
   }
   function loadSession(session?: FeedbackSession) {
@@ -722,14 +728,9 @@ export default function FeedbackWorkspace({
     content: string,
     source: "ai" | "outline",
     signature: string,
+    aiDraft?: FeedbackAIDraft,
   ) {
-    changeEntry(student.id, (entry) => ({
-      ...entry,
-      content,
-      reviewed: false,
-      generationSource: source,
-      generatedFrom: signature,
-    }));
+    changeEntry(student.id, (entry) => adoptGeneratedFeedback(entry, content, source, signature, aiDraft), true, true);
     setExpandedResults((current) => new Set(current).add(student.id));
   }
   function organize(student: Student) {
@@ -820,6 +821,7 @@ export default function FeedbackWorkspace({
       }
       const started = revision(student.id);
       const signature = sourceSignature(current, student, generationStyle);
+      const sourceInput = captureFeedbackInput(current, student);
       setFailures((prior) => {
         const next = new Map(prior);
         next.delete(student.id);
@@ -832,9 +834,9 @@ export default function FeedbackWorkspace({
         const result = await generateFeedback(
           {
             module,
-            brief: structuredClone(current.brief!),
-            observations: normalizeObservations(entry.observations),
-            grade: student.grade,
+            brief: sourceInput.brief,
+            observations: sourceInput.observations,
+            grade: sourceInput.grade,
             styleReference: generationStyle,
           },
           abortController.signal,
@@ -854,6 +856,10 @@ export default function FeedbackWorkspace({
             ),
           );
         } else {
+          const aiDraft: FeedbackAIDraft = {
+            id: newId(), sessionId: current.id, studentId: student.id,
+            content, input: sourceInput, createdAt: new Date().toISOString(), model: result.model,
+          };
           const reviewWarning = typeof result.reviewWarning === "string" ? result.reviewWarning.trim() : "";
           if (reviewWarning) reviewWarnings.push({ name: student.name, warning: reviewWarning });
           if (entry.content.trim()) {
@@ -864,8 +870,9 @@ export default function FeedbackWorkspace({
               signature,
               revision: started,
               reviewWarning,
+              aiDraft,
             });
-          } else acceptGenerated(student, content, "ai", signature);
+          } else acceptGenerated(student, content, "ai", signature, aiDraft);
           summary.success++;
         }
       } catch (error) {
@@ -1197,15 +1204,14 @@ export default function FeedbackWorkspace({
                     disabled={readonly || !selectedEntry.content.trim()}
                     onChange={(event) => {
                       const reviewed = event.target.checked;
-                      changeEntry(selected.id, (entry) => ({
-                        ...entry,
-                        reviewed,
-                      }));
+                      if (reviewed && !validateContext()) return;
+                      const input = captureFeedbackInput(draftRef.current, selected);
+                      changeEntry(selected.id, (entry) => setFeedbackReviewed(entry, reviewed, input), true, true);
                     }}
                   />
                   <span>
-                    已核对事实与措辞，可以发给家长
-                    <small>修改记录或正文后，需要重新核对。</small>
+                    已核对并采用，可以发给家长
+                    <small>AI 正文确认后保留修改对比；修改记录或正文后需重新核对。</small>
                   </span>
                 </label>
                 <button
@@ -1224,6 +1230,8 @@ export default function FeedbackWorkspace({
                 <p className="fb-field-note">
                   只复制到剪贴板，由你决定何时、发给哪位家长。
                 </p>
+                <FeedbackComparisonView entry={selectedEntry} studentName={selected.name} />
+                {selectedEntry.reviewed && !selectedEntry.comparison && <p className="fb-field-note">本条没有留存对应的 AI 原稿，仅保存采用的正文，无法还原修改对比。</p>}
               </section>
             </>
     );
@@ -1280,7 +1288,7 @@ export default function FeedbackWorkspace({
         <button type="button" className="button button-secondary" onClick={() => {
           const previousId = draftRef.current.id;
           const now = new Date().toISOString();
-          const next = { ...draftRef.current, id: newId(), createdAt: now, updatedAt: now };
+          const next = cloneFeedbackAsNewSession(draftRef.current, newId(), now);
           if (!cacheDraft(next, "")) return;
           const removed = removeFeedbackDraft(scope, previousId);
           if (removed.ok) setLocalDrafts((prior) => prior.filter((item) => item.session.id !== previousId));
@@ -1714,6 +1722,7 @@ export default function FeedbackWorkspace({
                   proposal.content,
                   proposal.source,
                   proposal.signature,
+                  proposal.aiDraft,
                 );
                 setProposal(null);
                 setStatus({

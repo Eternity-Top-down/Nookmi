@@ -1,6 +1,6 @@
 import type { FeedbackSession, ModuleId } from "./types";
 import { hasBriefContent, hasFeedbackContent } from "./feedbackModel";
-import { emptyFeedbackEntry } from "./data";
+import { emptyFeedbackEntry, parseFeedbackProvenance } from "./data";
 
 export interface FeedbackDraftRecord {
   session: FeedbackSession;
@@ -102,6 +102,11 @@ function validRecord(value: unknown, scope: string): value is FeedbackDraftRecor
       (Object.hasOwn(entry, "generatedFrom") && entry.generatedFrom !== undefined && typeof entry.generatedFrom !== "string") ||
       (Object.hasOwn(entry, "generationSource") && entry.generationSource !== undefined && !["ai", "manual", "outline"].includes(entry.generationSource as string)))
       return false;
+    try {
+      parseFeedbackProvenance(entry, session.id, entry.studentId, session.module as ModuleId);
+    } catch {
+      return false;
+    }
     studentIds.add(entry.studentId);
   }
   if (session.module === "one-to-one" &&

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { ChevronRight, Clock3, Copy, Pencil, Trash2 } from "lucide-react";
 import { Modal } from "./components";
 import FeedbackWordExport from "./FeedbackWordExport";
+import FeedbackComparisonView from "./FeedbackComparisonView";
 import { copyFeedbackText, formatFeedbackPeriod, getOneToOneTitle, resolveLessonNumber, withSuggestedLessonNumbers } from "./feedback";
 import { historicalFeedbackCopy, sortFeedbackHistory } from "./feedbackHistoryModel";
 import { normalizeOneToOneTasks } from "./feedbackModel";
@@ -60,6 +61,8 @@ export function FeedbackHistoryDetail({ session, students, sessions = [], onCopy
           <strong>{getOneToOneTitle(saved, student, sessions)}</strong>
         </div>}
         <div className="fb-history-body">{entry.content.trim() || "这次已保存填写记录，还没有反馈正文。"}</div>
+        <FeedbackComparisonView entry={entry} studentName={student.name} />
+        {entry.reviewed && !entry.comparison && <p className="fb-field-note">本条没有留存对应的 AI 原稿，无法还原修改对比。</p>}
         {hasFacts && <details className="fb-history-facts"><summary>查看填写记录<ChevronRight size={14} /></summary>
           {observationLabels.map(([key, label]) => <ReadField key={key} label={label} value={facts[key]} />)}
           {Object.entries(facts.subjects).map(([subject, value]) => <ReadField key={subject} label={`${subject}情况`} value={value} />)}

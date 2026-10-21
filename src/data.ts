@@ -4,10 +4,14 @@ import {
   type ClassGroup,
   type Exam,
   type ExamEntry,
+  type FeedbackAIDraft,
   type FeedbackBrief,
+  type FeedbackComparison,
   type FeedbackEntry,
+  type FeedbackInputSnapshot,
   type FeedbackSession,
   type ImportRow,
+  type ModuleId,
   type Student,
   type StudentFields,
   type StudentObservations,
@@ -395,6 +399,86 @@ function studentObservations(value: unknown): StudentObservations {
   };
 }
 
+function metadataObject(value: unknown, fields: string[], label: string): Record<string, unknown> {
+  const row = object(value, label);
+  if (Object.keys(row).some((key) => !fields.includes(key)))
+    throw new Error(`${label}包含无法识别的字段，未丢弃原数据`);
+  return row;
+}
+
+function metadataText(value: unknown, label: string, limit: number, required = false): string {
+  const text = string(value, label, limit, required);
+  if (/[\uD800-\uDFFF]/u.test(text)) throw new Error(`${label}包含无效 Unicode 字符`);
+  return text;
+}
+
+function metadataTime(value: unknown, label: string, local = false): string {
+  const time = local ? localDateTime(value, label) : timestamp(value, label);
+  if (time.slice(0, 10) < "1900-01-01" || time.slice(0, 10) > "2100-12-31")
+    throw new Error(`${label}须在 1900—2100 年内`);
+  return time;
+}
+
+function feedbackInputSnapshot(value: unknown): FeedbackInputSnapshot {
+  const row = metadataObject(value, ["module", "grade", "lessonAt", "brief", "observations"], "反馈输入快照");
+  if (row.module !== "one-to-one" && row.module !== "evening" && row.module !== "course")
+    throw new Error("反馈输入快照所属模块无效");
+  const rawBrief = metadataObject(row.brief, ["periodStart", "periodEnd", "subjects", "teachingContent", "commonTasks", "focus", "length"], "反馈输入课程快照");
+  const rawObservations = metadataObject(row.observations, ["performance", "strengths", "difficulties", "plan", "tasks", "subjects"], "反馈输入学生事实快照");
+  const brief = feedbackBrief(rawBrief);
+  const observations = studentObservations(rawObservations);
+  for (const text of [
+    ...brief.subjects, brief.teachingContent, brief.commonTasks, brief.focus,
+    observations.performance, observations.strengths, observations.difficulties, observations.plan,
+    observations.tasks, ...Object.keys(observations.subjects), ...Object.values(observations.subjects),
+  ]) metadataText(text, "反馈输入快照文字", 8000);
+  return {
+    module: row.module,
+    grade: metadataText(row.grade, "反馈输入时年级", 50),
+    lessonAt: metadataTime(row.lessonAt, "反馈输入时上课时间", true),
+    brief, observations,
+  };
+}
+
+function feedbackAIDraft(value: unknown, sessionId: string, studentId: string, module: ModuleId): FeedbackAIDraft {
+  const row = metadataObject(value, ["id", "sessionId", "studentId", "content", "input", "createdAt", "model"], "AI 原稿");
+  const result: FeedbackAIDraft = {
+    id: metadataText(row.id, "AI 原稿 ID", 128, true),
+    sessionId: metadataText(row.sessionId, "AI 原稿所属课程", 128, true),
+    studentId: metadataText(row.studentId, "AI 原稿所属学生", 128, true),
+    content: metadataText(row.content, "AI 原稿正文", 10_000, true),
+    input: feedbackInputSnapshot(row.input),
+    createdAt: metadataTime(row.createdAt, "AI 原稿生成时间"),
+    model: metadataText(row.model, "AI 原稿模型名称", 200),
+  };
+  if (result.sessionId !== sessionId || result.studentId !== studentId || result.input.module !== module)
+    throw new Error("AI 原稿与当前课程、学生或模块的归属不一致");
+  return result;
+}
+
+/** Parse both optional records without silently losing malformed provenance on restore. */
+export function parseFeedbackProvenance(
+  entry: Record<string, unknown>, sessionId: string, studentId: string, module: ModuleId,
+): Pick<FeedbackEntry, "aiDraft" | "comparison"> {
+  const result: Pick<FeedbackEntry, "aiDraft" | "comparison"> = {};
+  if (Object.hasOwn(entry, "aiDraft"))
+    result.aiDraft = feedbackAIDraft(entry.aiDraft, sessionId, studentId, module);
+  if (Object.hasOwn(entry, "comparison")) {
+    const row = metadataObject(entry.comparison, ["source", "finalContent", "finalInput", "confirmedAt"], "已采用反馈对比");
+    const comparison: FeedbackComparison = {
+      source: feedbackAIDraft(row.source, sessionId, studentId, module),
+      finalContent: metadataText(row.finalContent, "已采用反馈正文", 10_000, true),
+      finalInput: feedbackInputSnapshot(row.finalInput),
+      confirmedAt: metadataTime(row.confirmedAt, "反馈确认采用时间"),
+    };
+    if (comparison.finalInput.module !== module) throw new Error("已采用反馈输入快照与当前模块不一致");
+    if (entry.reviewed === true && comparison.finalContent !== entry.content)
+      throw new Error("已确认反馈正文与保存的最终稿不一致，请重新确认采用");
+    result.comparison = comparison;
+  }
+  return result;
+}
+
 function hasBriefText(brief?: FeedbackBrief): boolean {
   return Boolean(
     brief &&
@@ -544,6 +628,8 @@ export function parseBackup(text: string): AppData {
         row.module !== "course"
       )
         throw new Error("课程反馈所属模块无效");
+      const sessionId = id(row.id, "课程反馈 ID");
+      const module = row.module;
       let classId: string | null = null;
       let studentId: string | null = null;
       if (row.module === "one-to-one") {
@@ -608,6 +694,7 @@ export function parseBackup(text: string): AppData {
               "反馈生成依据标记",
               256,
             );
+          Object.assign(result, parseFeedbackProvenance(entry, sessionId, entryStudentId, module));
           return result;
         },
       );
@@ -628,7 +715,7 @@ export function parseBackup(text: string): AppData {
       if (!entries.some(hasEntryText) && !hasBriefText(brief))
         throw new Error("课程反馈至少需要非空反馈内容、学生事实或共用内容");
       return {
-        id: id(row.id, "课程反馈 ID"),
+        id: sessionId,
         module: row.module,
         classId,
         studentId,

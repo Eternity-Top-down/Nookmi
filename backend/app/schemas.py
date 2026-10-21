@@ -179,6 +179,31 @@ class OptionalFieldsModel(Model):
         return value
 
 
+class FeedbackInputSnapshot(Model):
+    module: Module
+    grade: Annotated[Text, Field(max_length=50)]
+    lessonAt: LessonTime
+    brief: FeedbackBrief
+    observations: StudentObservations
+
+
+class FeedbackAIDraft(Model):
+    id: Identifier
+    sessionId: Identifier
+    studentId: Identifier
+    content: Annotated[Text10000, AfterValidator(nonblank)]
+    input: FeedbackInputSnapshot
+    createdAt: Timestamp
+    model: Annotated[Text, Field(max_length=200)]
+
+
+class FeedbackComparison(Model):
+    source: FeedbackAIDraft
+    finalContent: Annotated[Text10000, AfterValidator(nonblank)]
+    finalInput: FeedbackInputSnapshot
+    confirmedAt: Timestamp
+
+
 class FeedbackEntry(OptionalFieldsModel):
     studentId: Identifier
     content: Text10000
@@ -186,6 +211,15 @@ class FeedbackEntry(OptionalFieldsModel):
     reviewed: StrictBool | None = None
     generationSource: Literal["ai", "manual", "outline"] | None = None
     generatedFrom: Annotated[Text, Field(max_length=256)] | None = None
+    aiDraft: FeedbackAIDraft | None = None
+    comparison: FeedbackComparison | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_null(cls, value: object) -> object:
+        if isinstance(value, dict) and any(key in value and value[key] is None for key in ("aiDraft", "comparison")):
+            raise PydanticCustomError("feedback_provenance_null", "AI 原稿和修改对比记录不可为 null；未使用时请省略")
+        return super().reject_explicit_null(value)
 
     def has_text(self) -> bool:
         return bool(self.content.strip() or (self.observations and self.observations.has_text()))
@@ -224,6 +258,16 @@ class FeedbackSession(OptionalFieldsModel):
         ids = [entry.studentId for entry in self.entries]
         if len(set(ids)) != len(ids):
             raise ValueError("同一次课程反馈中存在重复学生")
+        for entry in self.entries:
+            sources = [entry.aiDraft, entry.comparison.source if entry.comparison else None]
+            for source in sources:
+                if source and (source.sessionId != self.id or source.studentId != entry.studentId or source.input.module != self.module):
+                    raise PydanticCustomError("feedback_provenance_scope", "AI 原稿与当前课程、学生或模块的归属不一致")
+            if entry.comparison:
+                if entry.comparison.finalInput.module != self.module:
+                    raise PydanticCustomError("feedback_provenance_scope", "已采用反馈输入快照与当前模块不一致")
+                if entry.reviewed is True and entry.comparison.finalContent != entry.content:
+                    raise PydanticCustomError("feedback_provenance_final", "已确认反馈正文与保存的最终稿不一致，请重新确认采用")
         if not any(entry.has_text() for entry in self.entries) and not (self.brief and self.brief.has_text()):
             if self.module == "one-to-one":
                 raise ValueError("请先填写本次课程内容、学生事实或反馈正文")
