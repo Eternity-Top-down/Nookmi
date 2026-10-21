@@ -39,8 +39,8 @@ def positive_int(value: str) -> int:
     return number
 
 
-def load_cases() -> dict:
-    suite = json.loads(CASES_PATH.read_text(encoding="utf-8"))
+def load_cases(path: Path = CASES_PATH) -> dict:
+    suite = json.loads(path.read_text(encoding="utf-8"))
     identifiers = [case["id"] for case in suite["cases"]]
     if len(set(identifiers)) != len(identifiers):
         raise ValueError("用例 ID 重复。")
@@ -71,7 +71,7 @@ def mechanical_observations(content: str) -> dict:
 
 
 class EvaluationProvider(AIProvider):
-    """Record only request hashes and sizes, never configuration or raw headers."""
+    """Record request digests and generated text, never configuration or headers."""
 
     def __init__(self, settings: SettingsStore):
         super().__init__(settings)
@@ -84,7 +84,10 @@ class EvaluationProvider(AIProvider):
             "promptCharacterCount": sum(len(message["content"]) for message in messages),
             "networkTimeoutSeconds": options.get("timeout_seconds", 60.0),
         })
-        return super().complete(messages, **options)
+        result = super().complete(messages, **options)
+        # Only synthetic evaluation output is retained; no credentials or headers.
+        self.calls[-1]["content"] = result["content"]
+        return result
 
 
 def markdown_report(report: dict) -> str:
@@ -112,7 +115,7 @@ def markdown_report(report: dict) -> str:
         lines.extend(["### 核对要点", ""])
         lines.extend(f"- [ ] {point}" for point in item["reviewPoints"])
         if item.get("providerCalls"):
-            lines.extend(["", "实际请求摘要（包含自动检查请求）：", "", "```json",
+            lines.extend(["", "实际请求摘要与各阶段生成文本（包含自动检查请求）：", "", "```json",
                           json.dumps(item["providerCalls"], ensure_ascii=False, indent=2), "```"])
         if item.get("mechanicalObservations"):
             lines.extend(["", "机械信息（不等于质量结论）：", "", "```json",
@@ -139,6 +142,8 @@ def main() -> int:
     mode.add_argument("--run", action="store_true", help="调用现有配置的服务，每案例正常 2 次请求，可能产生费用。")
     mode.add_argument("--dry-run", action="store_true", help="仅校验用例和构建提示词（默认）。")
     parser.add_argument("--case", action="append", dest="case_ids", help="按 ID 选择，可重复指定。")
+    parser.add_argument("--cases-file", type=Path, default=CASES_PATH, help="固定匿名用例文件，默认原有回归集。")
+    parser.add_argument("--module", choices=("one-to-one", "evening", "course"), help="只运行指定教学模块。")
     parser.add_argument("--limit", type=positive_int, help="最多运行前 N 个已选案例（不是 API 请求数）。")
     parser.add_argument("--settings-dir", type=Path,
                         default=Path(os.environ.get("NOOKMI_DATA_DIR") or ROOT / ".local"),
@@ -147,7 +152,7 @@ def main() -> int:
                         help="本地报告父目录（实际运行时写入）。")
     args = parser.parse_args()
     try:
-        suite = load_cases()
+        suite = load_cases(args.cases_file)
     except (OSError, ValueError, KeyError, TypeError):
         print("用例文件无效，请检查固定测试资料；未调用模型。", file=sys.stderr)
         return 2
@@ -155,8 +160,12 @@ def main() -> int:
     if args.case_ids and any(identifier not in known_ids for identifier in args.case_ids):
         parser.error("存在未知用例 ID；先不带参数运行查看可用列表。")
     cases = [case for case in suite["cases"] if not args.case_ids or case["id"] in args.case_ids]
+    if args.module:
+        cases = [case for case in cases if case["request"]["module"] == args.module]
     if args.limit:
         cases = cases[:args.limit]
+    if not cases:
+        parser.error("没有匹配的案例；未调用模型。")
     prepared = [(case, build_messages(GenerateRequest.model_validate(case["request"]))) for case in cases]
     if not args.run:
         print(f"DRY RUN：{len(prepared)} 个案例校验通过，未读取 AI 配置、未调用模型、未修改学生数据。")
@@ -176,9 +185,10 @@ def main() -> int:
         return 2
     directory = args.output_dir / datetime.now(SHANGHAI).strftime("feedback-%Y%m%d-%H%M%S-%f")
     report = {
-        "version": 1, "startedAt": now(), "finishedAt": None, "timezone": "Asia/Shanghai",
+        "version": 2, "startedAt": now(), "finishedAt": None, "timezone": "Asia/Shanghai",
         "runState": "running", "model": configured["model"],
         "pipeline": "product_draft_then_review",
+        "casesFile": args.cases_file.name,
         "sourceNote": suite["sourceNote"], "rubric": suite["rubric"], "results": [],
         "evaluationStatus": "人工质量评价待完成；请求成功和机械检查不等于生成质量通过。",
     }

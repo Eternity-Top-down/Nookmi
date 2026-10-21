@@ -1,0 +1,556 @@
+{
+  "version": 1,
+  "name": "模拟新用户简短记录：基线校准与独立留出",
+  "sourceNote": "本组15例由新用户日常随手记录的使用场景直接构造，非从成熟反馈成稿逆向提炼，未读取真实学生数据或个人范文。前12例用于同输入基线与调整后对照，最后3例以holdout前缀标记，供调整后独立检查，初次基线不运行留出例。全部为匿名虚构资料；模拟输入与人工核对不能证明实际用户省时或所有模型上的稳定质量。",
+  "rubric": [
+    "事实与范围：只保留当前短记录中的事实和来源，不从共用课程、范文或建议反推个人表现；单次现象不扩为长期习惯。",
+    "掌握层次：严格区分独立完成、提示后继续、跟随订正与迁移仍困难，既不抬高也不反向贬低整体能力。",
+    "少量信息的可用度：信息少时自然简短，不硬凑板块、同义重复、空泛赞美或向家长暴露填写与审核过程。",
+    "建议的价值：对应具体卡点，给适龄可行的下一步，避免泛泛多练、无依据归因、绝对化解法和新增布置任务。",
+    "语义与模块：识别口语、省略句、分科缩写、计划与已发生事实，保留学科边界和个人风格。",
+    "教师修改成本：记录必须修改的事实、措辞或结构；输出流畅、请求成功、机械字数均不等于质量合格。"
+  ],
+  "cases": [
+    {
+      "id": "sparse-one-to-one-sign",
+      "label": "一对一：口语短记与局部独立完成",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "one-to-one",
+        "grade": "初一",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "一元一次方程，去括号和移项",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "去括号漏负号，提醒看括号前符号后自己改对；移项那两题独立做的",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "讲义第2页1—3题",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "应保留去括号需提醒、移项两题独立完成这两个不同层次，不能写成所有方程均独立掌握。",
+        "可以建议去括号前核对符号；不能推断不认真、长期粗心或上课专注。",
+        "实际作业仅为讲义第2页1—3题，不扩增次数、期限或其他任务。",
+        "输入很短，避免把同一符号问题在表现、困难、建议中多次近义复述。"
+      ]
+    },
+    {
+      "id": "sparse-one-to-one-transfer",
+      "label": "一对一：听懂和订正后仍不会迁移",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "one-to-one",
+        "grade": "高二",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "概率综合题",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "例题听懂，跟着订正了；换一道还是不会选事件",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "应保留例题听懂、跟随订正、换题仍不会选择事件三项事实，不能写成能自己订正或概率已掌握。",
+        "困难落在事件的选择和分析，不能自行补出计算错误、漏样本或公式不会。",
+        "建议可围绕识别所求事件和对比题目条件展开，不强行指定独立事件乘法或某种概率公式。",
+        "未记录课堂状态和课后任务，应省略，不写未布置作业或材料不足。"
+      ]
+    },
+    {
+      "id": "sparse-one-to-one-no-course",
+      "label": "一对一：课程框空，活动与表现混在短记里",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "one-to-one",
+        "grade": "高二",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "今天讲斜率，做了两道读图题；斜率会算，图上竖直线写成k=0",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "课程框虽空，实际观察中明确写了今天讲斜率、做两道读图题，应保留这些本次活动；不能因为字段位置丢弃，也不扩成整套解析几何课程。",
+        "建议若解释概念，应明确竖直直线斜率不存在，水平直线才是斜率为0，不能笼统写特殊情况要注意。",
+        "没有订正后表现的记录，不能新增提醒后改对、已经理解、仍无法独立等结论。",
+        "应保留一般斜率计算会做和竖直线误判的差别；没有课后任务就省略，不借用内置范文的数列、概率或作业。"
+      ]
+    },
+    {
+      "id": "sparse-one-to-one-plan-only",
+      "label": "一对一：实际观察框里只有未来打算",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "one-to-one",
+        "grade": "高二",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "下次准备带着复盘数列错题，作业想让孩子重做一遍，还没定",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "实际观察完全缺失，不能编造本次授课、数列掌握情况、课堂表现、已经订正或已布置作业。",
+        "如保留内容，只能将复盘表述为教师下一次的计划，作业仍是未确定的打算，不能升级为确定要求。",
+        "不从数列错题反推出具体薄弱题型或基本公式不熟。",
+        "不要为了长反馈补齐学习内容、表现与作业板块；也不向家长写输入为空、信息不足或AI审核说明。"
+      ]
+    },
+    {
+      "id": "sparse-evening-mixed-subjects",
+      "label": "晚辅：缩写分科与混写记录",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "evening",
+        "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": [
+            "数学",
+            "物理",
+            "化学"
+          ],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "作业都写完了。数：公式法会，因式分解选法不熟；物：串并联点一下能分清",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "应正确展开数为数学、物为物理，保留各科对应的具体情况，不能串科。",
+        "写完作业不等于按时、高效、全对或纪律良好，不能补这些评价。",
+        "数学公式法会做与因式分解选法不熟分开，物理点拨后能分清不写为独立掌握。",
+        "即使科目列表包含化学，没有化学事实也不评价化学。",
+        "建议应分别回应方法选择和电路判断，不因仅有短记就生成完整学科知识清单。"
+      ]
+    },
+    {
+      "id": "sparse-evening-single-chat",
+      "label": "晚辅：单次聊天与作业交齐",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "evening",
+        "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": [
+            "数学",
+            "物理"
+          ],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "周二有一阵聊天，提醒后继续写；这周作业都交齐了",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "只能描述周二一次聊天及提醒后的行为，不扩大为每天聊天、纪律差或顽固习惯。",
+        "交齐了不等于每天按时完成、作业质量好或效率高，不能新增这些事实。",
+        "未记录具体学科掌握情况，不能按科目列表补写数学物理基础评价。",
+        "可以针对专注提供一条适度建议，避免设置未布置的打卡、计时、题量或家长监督要求。",
+        "资料只涉及一件行为和作业提交，不应反复重述或堆成多个空板块。"
+      ]
+    },
+    {
+      "id": "sparse-evening-uncertain",
+      "label": "晚辅：少量作业判断中的不确定性",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "evening",
+        "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": [
+            "数学",
+            "物理"
+          ],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "物理只问了两题，看着会一点，还不确定；数学坐标图能画对",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "物理评价保留只问两题及暂不确定的范围，不能写成基础扎实、基础薄弱或整体掌握程度已确定。",
+        "数学仅记录坐标图能画对，不扩大为函数知识全面掌握。",
+        "不能凭空补物理电学、密度或实验等具体题型。",
+        "可将物理建议写成继续通过实际题目了解掌握程度，不在给家长的正文反复强调证据不足或老师未填写。",
+        "避免把看着会一点直接贬成听懂但不会用。"
+      ]
+    },
+    {
+      "id": "sparse-evening-style-plan",
+      "label": "晚辅：短风格与未来计划混写",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "evening",
+        "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": [
+            "数学",
+            "物理"
+          ],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "数学去括号又漏变号，提醒后能改；下周打算让孩子先圈负号再算",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": "本次观察：孩子能按步骤解简单方程，检查时发现一处漏写单位。\n下一步：可以在列式前把单位标在旁边，写完再对照检查。"
+      },
+      "reviewPoints": [
+        "个人风格采用简短的本次观察、下一步两段，不加默认长结构、图标和编号建议。",
+        "应保留去括号重复出现漏变号、提醒后能改，不能写成已经形成圈负号习惯。",
+        "下周打算作为一次未来计划表达，不在表现和建议两处重复。",
+        "风格范文中的简单方程掌握情况、漏写单位和标单位方法不能迁入当前事实或建议。",
+        "没有物理观察，不补写物理。"
+      ]
+    },
+    {
+      "id": "sparse-course-shared-boundary",
+      "label": "班课：共用教学内容与个人掌握分离",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "集合交并补、充要条件、基本不等式",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "交并会自己做；补集总忘看全集，提醒后能改",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "共用概述可包含全部三个教学主题，但个人掌握只能评价交并集和补集，不能补充充要条件或基本不等式的表现。",
+        "交并集独立完成与补集需提醒分开，不概括成集合基础全面扎实。",
+        "建议应重点帮助检查全集与补集范围，不把所有共用主题都列成个人薄弱点或必做建议。",
+        "无课堂状态记录，不默认认真专注、主动提问。",
+        "只需适量展开，避免对同一漏看全集的问题分别长篇重复。"
+      ]
+    },
+    {
+      "id": "sparse-course-condition-transform",
+      "label": "班课：能提取条件但不会转化",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "基本不等式求最值",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "会找题里条件，就是不知道往哪个式子变；给个开头能接着推",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留能提取条件但不知道怎样变形的卡点，不改成读不懂题、基础概念不认识。",
+        "给开头后能继续不等于独立找到了切入点，也不证明所有步骤都已熟练。",
+        "建议可讲条件与目标形式的对照、取等可行性与常见变形复盘，不凭空套入特定定值题型。",
+        "不得编造具体题目、已课堂总结的方法、课后题号或进步原因。",
+        "表达应像教师的具体观察，不写过度心理分析。"
+      ]
+    },
+    {
+      "id": "sparse-course-one-incident",
+      "label": "班课：只有一次多选遗漏",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "不等式性质",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "多选漏了一项",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "保留本次多选漏一项，不能扩大为经常漏选、多选整体薄弱、计算错误或概念不清。",
+        "不能归因于凭印象作答、审题不认真、不会分类讨论等未提供原因。",
+        "可以建议逐项核对判断依据，不断言该次遗漏一定是边界、零值或负值导致。",
+        "允许非常简短；共用教学概述后写观察和一条建议即可，不硬凑表现、优点、困难、多个建议。",
+        "不从内置范文搬入基本不等式最值或集合概念。"
+      ]
+    },
+    {
+      "id": "sparse-course-small-change",
+      "label": "班课：一次有限变化与仍需提示",
+      "sourceKind": "simulated_new_user_notes",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "一元二次不等式分类讨论",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "上节同类题没思路，这次能先列式，算到一半还要提醒",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "可以写这次相比上节能先列式，但进步只限于所述同类题，不扩大为数学成绩或整体能力明显提升。",
+        "应同时保留中途仍需提醒，不能写成能独立完成整题。",
+        "不能猜测提醒内容就是端点、判别式或开口方向；建议中的可检查环节应明确是待尝试方法。",
+        "不能补上努力导致进步、专注提高等原因。",
+        "建议应帮助从已列式的地方梳理下一步，不笼统重复多复习多巩固。"
+      ]
+    },
+    {
+      "id": "holdout-one-to-one-opening",
+      "label": "留出一对一：顶点式与开口方向",
+      "sourceKind": "simulated_new_user_holdout",
+      "request": {
+        "module": "one-to-one",
+        "grade": "初三",
+        "brief": {
+          "periodStart": "2026-10-22",
+          "periodEnd": "2026-10-22",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "二次函数图像",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "顶点式能认，画图时开口方向看反；提醒a的符号后改对",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "应保留能识别顶点式、画图开口方向出错、提醒后订正三项，不能写为二次函数全面掌握。",
+        "建议准确说明二次项系数a的正负决定开口方向，不把顶点位置与开口方向混为一谈。",
+        "无题量、作业、课堂状态记录，不补造。",
+        "缺少长教学清单不应扩写整套二次函数知识。"
+      ]
+    },
+    {
+      "id": "holdout-evening-repeat-gap",
+      "label": "留出晚辅：当场会做与隔日再卡住",
+      "sourceKind": "simulated_new_user_holdout",
+      "request": {
+        "module": "evening",
+        "grade": "初二",
+        "brief": {
+          "periodStart": "2026-10-19",
+          "periodEnd": "2026-10-23",
+          "subjects": [
+            "数学",
+            "物理"
+          ],
+          "teachingContent": "",
+          "commonTasks": "",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "数题讲完当场会，周三同类题又卡住；物理本周没看作业",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "应保留数学当场讲后会、周三同类题又遇阻，不能写成已独立掌握或记忆力差。",
+        "未提供具体数学知识点，不能补具体题型与解法，也不写成数学基础全面薄弱。",
+        "没有查看物理作业不等于学生没做物理作业，不得转写成缺交或完成情况差。",
+        "物理可不评价；不能将老师未观察的过程写成学生缺点。",
+        "建议可以针对脱离讲解后重试与对照关键步骤，不虚构每天题量、打卡或已经安排的检查。"
+      ]
+    },
+    {
+      "id": "holdout-course-scope-and-task",
+      "label": "留出班课：本组全对与换表述困难",
+      "sourceKind": "simulated_new_user_holdout",
+      "request": {
+        "module": "course",
+        "grade": "高一",
+        "brief": {
+          "periodStart": "2026-10-01",
+          "periodEnd": "2026-10-31",
+          "subjects": [
+            "数学"
+          ],
+          "teachingContent": "集合运算、充分条件和必要条件",
+          "commonTasks": "订正这次讲义中的错题",
+          "focus": "",
+          "length": "standard"
+        },
+        "observations": {
+          "performance": "集合那组都做对了，充要条件只会照例题，换个说法就反",
+          "strengths": "",
+          "difficulties": "",
+          "plan": "",
+          "tasks": "",
+          "subjects": {}
+        },
+        "styleReference": ""
+      },
+      "reviewPoints": [
+        "集合全对的范围仅为那组题，不能扩为所有集合概念全面掌握。",
+        "充分必要条件的困难在更换表述后推理方向混淆，不得写成概念完全不会或不会独立做任何题。",
+        "建议可对照两个命题与推出方向理解表述变化，不堆叠无关集合知识。",
+        "应保留共用任务订正这次讲义错题，不新增页码、题数、期限。",
+        "没有状态和进步的观察，不补认真、积极或近期显著提高。"
+      ]
+    }
+  ]
+}

@@ -890,7 +890,7 @@ class FeedbackStyleTests(ApiTestCase):
     def test_absent_empty_or_whitespace_style_keeps_the_existing_prompt(self):
         for module in ("one-to-one", "evening", "course"):
             baseline = build_messages(GenerateRequest.model_validate(self.generate_input(module)))
-            self.assertEqual(len(baseline), 6)
+            self.assertEqual(len(baseline), 8)  # System + three example pairs + current facts.
             for style in ("", " \n\t "):
                 messages = build_messages(GenerateRequest.model_validate(self.generate_input(module, styleReference=style)))
                 self.assertEqual(messages, baseline)
