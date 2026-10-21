@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -10,6 +11,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUpFromLine,
+  BarChart3,
   BookOpen,
   Check,
   ChevronRight,
@@ -38,11 +40,14 @@ import {
 import { ClassForm, ImportStudents, Modal, StudentForm } from "./components";
 import FeedbackWorkspace from "./FeedbackWorkspace";
 import FeedbackHistory from "./FeedbackHistory";
+import ExamWorkspace from "./ExamWorkspace";
+import ModuleOverview, { moduleFeedbackItems, type OverviewMode } from "./ModuleOverview";
 import AISettings from "./AISettings";
 import { hasObservations } from "./feedbackModel";
 import { clearFeedbackDrafts, deleteFeedbackWithDraftRecovery, feedbackDraftScope, pruneStudentFeedbackDrafts } from "./feedbackDrafts";
 import { formatFeedbackPeriod } from "./feedback";
 import { clearAllStyleDrafts } from "./styleDrafts";
+import { clearExamDrafts, pruneStudentExamDrafts } from "./examDrafts";
 import { ApiError, getWorkspace, putWorkspace } from "./api";
 import { version } from "../package.json";
 import {
@@ -58,6 +63,7 @@ import { parseRoute, routeUrl, type Route } from "./routes";
 import {
   type AppData,
   type ClassGroup,
+  type Exam,
   type FeedbackSession,
   type ModuleId,
   type Student,
@@ -94,6 +100,7 @@ type ModalState =
   | { kind: "backup" }
   | { kind: "note" }
   | { kind: "ai" }
+  | { kind: "overview"; mode: OverviewMode }
   | null;
 type Confirmation = {
   title: string;
@@ -168,15 +175,18 @@ function StatCard({
   suffix,
   icon,
   tone,
+  onClick,
 }: {
   label: string;
   value: number;
   suffix: string;
   icon: ReactNode;
   tone: string;
+  onClick: () => void;
 }) {
   return (
-    <div className="stat-card">
+    <button type="button" className="stat-card stat-card-link" onClick={onClick}
+      aria-label={`${label}：${value}${suffix}，点击查看`} title={`点击查看${label}`}>
       <div>
         <span className="stat-label">{label}</span>
         <div className="stat-number">
@@ -185,7 +195,7 @@ function StatCard({
         </div>
       </div>
       <span className={`stat-icon tone-${tone}`}>{icon}</span>
-    </div>
+    </button>
   );
 }
 
@@ -216,7 +226,7 @@ export default function App() {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [noteDate, setNoteDate] = useState(localDate);
   const [noteContent, setNoteContent] = useState("");
-  const [activePanel, setActivePanel] = useState<"feedback" | "details">(
+  const [activePanel, setActivePanel] = useState<"feedback" | "exams" | "details">(
     "feedback",
   );
   const feedbackDirty = useRef(false);
@@ -256,9 +266,9 @@ export default function App() {
       if (feedbackDirty.current) {
         window.history.replaceState(null, "", routeUrl(routeRef.current));
         setConfirmation({
-          title: "当前反馈尚未完成",
+          title: "当前工作区尚未完成",
           message:
-            "当前有生成任务、未确认的风格修改，或本机草稿保存异常。请先检查保存提示；离开会停止生成。",
+            "当前有进行中的任务、未确认的修改，或草稿保存异常。请先检查当前页面的保存提示；离开会停止进行中的任务。",
           label: "继续离开",
           action: () => {
             feedbackDirty.current = false;
@@ -322,6 +332,9 @@ export default function App() {
   const moduleFeedback = feedbackSessions.filter(
     (s) => s.module === route.module,
   );
+  const completedModuleFeedbackCount = useMemo(() => moduleFeedbackItems(
+    route.module, data.feedbackSessions ?? [], data.students, data.classes,
+  ).length, [route.module, data.feedbackSessions, data.students, data.classes]);
   const scopedFeedback = moduleFeedback.filter((s) =>
     student?.module === "one-to-one"
       ? s.studentId === student.id
@@ -360,13 +373,13 @@ export default function App() {
   const isEmpty = !data.students.length && !data.classes.length;
   const showStudentList = route.module === "one-to-one" || !!group;
 
-  function changePanel(next: "feedback" | "details") {
+  function changePanel(next: "feedback" | "exams" | "details") {
     if (next === activePanel) return;
     if (feedbackDirty.current) {
       setConfirmation({
-        title: "当前反馈尚未完成",
+        title: "当前工作区尚未完成",
         message:
-          "当前有生成任务、未确认的风格修改，或本机草稿保存异常。请先检查保存提示；切换会停止生成。",
+          "当前有进行中的任务、未确认的修改，或草稿保存异常。请先检查当前页面的保存提示；切换会停止进行中的任务。",
         label: "继续切换",
         action: () => {
           feedbackDirty.current = false;
@@ -395,6 +408,26 @@ export default function App() {
       `${MODULES[module].title}的个人风格参考已保存`,
     );
   }
+  async function saveExam(exam: Exam, automatic = true) {
+    if (conflict) return false;
+    return persist(
+      (current) => ({
+        ...current,
+        exams: (current.exams ?? []).some((item) => item.id === exam.id)
+          ? current.exams!.map((item) => item.id === exam.id ? exam : item)
+          : [...(current.exams ?? []), exam],
+      }),
+      "本次考试成绩已保存",
+      automatic,
+    );
+  }
+  async function deleteExam(exam: Exam) {
+    if (conflict) return false;
+    return persist(
+      (current) => ({ ...current, exams: (current.exams ?? []).filter((item) => item.id !== exam.id) }),
+      "本次考试已删除",
+    );
+  }
   function workspaceTabs(personal = false) {
     return (
       <div
@@ -410,6 +443,16 @@ export default function App() {
           <MessageSquareText size={17} />
           {personal ? "课程反馈" : "班级反馈"}
         </button>
+        {!personal && group?.module === "course" && (
+          <button
+            className={activePanel === "exams" ? "active" : ""}
+            aria-pressed={activePanel === "exams"}
+            onClick={() => changePanel("exams")}
+          >
+            <BarChart3 size={17} />
+            考试成绩
+          </button>
+        )}
         <button
           className={activePanel === "details" ? "active" : ""}
           aria-pressed={activePanel === "details"}
@@ -434,7 +477,7 @@ export default function App() {
       return false;
     }
     savingLock.current = true;
-    // Background feedback saves keep the write lock, without covering the editor.
+    // Background saves keep the write lock, without covering the editor.
     setBlockingSave(!silent);
     try {
       const saved = await putWorkspace(typeof next === "function" ? next(dataRef.current) : next, revision.current);
@@ -468,7 +511,8 @@ export default function App() {
   function clearRecoveredInputs(scope?: string) {
     const feedback = clearFeedbackDrafts(scope);
     const styleError = scope === undefined ? clearAllStyleDrafts() : null;
-    if (!feedback.ok || styleError) setToast({ message: feedback.error ?? styleError ?? "本机草稿未能清理。", error: true });
+    const examError = scope === undefined ? clearExamDrafts() : null;
+    if (!feedback.ok || styleError || examError) setToast({ message: feedback.error ?? styleError ?? examError ?? "本机草稿未能清理。", error: true });
   }
   function deleteFeedback(session: FeedbackSession, targetStudent?: Student) {
     const personal = targetStudent && session.module !== "one-to-one";
@@ -596,7 +640,7 @@ export default function App() {
     setConfirmation({
       title: `删除学生「${target.name}」？`,
       message:
-        "该学生的个人信息、课程反馈和教学记录会一并删除。此操作无法撤销，建议先导出数据备份。",
+        "该学生的个人信息、课程反馈、考试成绩和教学记录会一并删除。此操作无法撤销，建议先导出数据备份。",
       label: "确认删除",
       danger: true,
       action: async () => {
@@ -610,12 +654,17 @@ export default function App() {
                 current.feedbackSessions ?? [],
                 target.id,
               ),
+              ...(current.exams ? { exams: current.exams.map((exam) => ({
+                ...exam,
+                entries: exam.entries.filter((entry) => entry.studentId !== target.id),
+              })) } : {}),
             }),
             "学生已删除",
           )
         ) {
           const pruned = pruneStudentFeedbackDrafts(target.module, target.classId, target.id);
-          if (!pruned.ok) setToast({ message: pruned.error ?? "本机草稿未能清理。", error: true });
+          const examError = target.classId ? pruneStudentExamDrafts(target.classId, target.id) : null;
+          if (!pruned.ok || examError) setToast({ message: pruned.error ?? examError ?? "本机草稿未能清理。", error: true });
           setConfirmation(null);
           feedbackDirty.current = false;
           navigate({ module: route.module, classId: group?.id });
@@ -629,7 +678,7 @@ export default function App() {
     );
     setConfirmation({
       title: `删除班级「${target.name}」？`,
-      message: `班级内 ${ids.size} 位学生、课程反馈及教学记录会一并删除。此操作无法撤销，建议先导出数据备份。`,
+      message: `班级内 ${ids.size} 位学生、课程反馈、考试成绩及教学记录会一并删除。此操作无法撤销，建议先导出数据备份。`,
       label: "删除班级及学生",
       danger: true,
       action: async () => {
@@ -643,12 +692,15 @@ export default function App() {
                 students: current.students.filter((s) => !currentIds.has(s.id)),
                 records: current.records.filter((r) => !currentIds.has(r.studentId)),
                 feedbackSessions: (current.feedbackSessions ?? []).filter((s) => s.classId !== target.id),
+                ...(current.exams ? { exams: current.exams.filter((exam) => exam.classId !== target.id) } : {}),
               };
             },
             "班级已删除",
           )
         ) {
           clearRecoveredInputs(feedbackDraftScope(target.module, target.id, null));
+          const examError = clearExamDrafts(target.id);
+          if (examError) setToast({ message: examError, error: true });
           setConfirmation(null);
           feedbackDirty.current = false;
           navigate({ module: route.module });
@@ -679,7 +731,7 @@ export default function App() {
       setModal(null);
       setConfirmation({
         title: "恢复这份数据备份？",
-        message: `备份包含 ${restored.classes.length} 个班级、${restored.students.length} 位学生、${restored.feedbackSessions?.length ?? 0} 次课程反馈、${restored.records.length} 条教学记录。恢复将替换当前所有模块的数据；建议先导出现有备份。`,
+        message: `备份包含 ${restored.classes.length} 个班级、${restored.students.length} 位学生、${restored.feedbackSessions?.length ?? 0} 次课程反馈、${restored.exams?.length ?? 0} 次考试、${restored.records.length} 条教学记录。恢复将替换当前所有模块的数据；建议先导出现有备份。`,
         label: "确认替换并恢复",
         action: async () => {
           if (await persist(restored, "数据备份已恢复")) {
@@ -716,7 +768,7 @@ export default function App() {
       setConfirmation({
         title: "重新读取数据库？",
         message:
-          "将重新读取数据库。已暂存的本机草稿仍可恢复；如果保存提示异常，请先复制留存文字。",
+          "将重新读取数据库。已暂存的本机草稿仍可恢复；如果保存提示异常，请先留存当前内容。",
         label: "重新读取并保留本机草稿",
         action: reload,
       });
@@ -1460,6 +1512,7 @@ export default function App() {
                     suffix="位"
                     icon={<Users size={22} />}
                     tone="green"
+                    onClick={() => setModal({ kind: "overview", mode: "students" })}
                   />
                   <StatCard
                     label={showStudentList ? "覆盖年级" : "教学班级"}
@@ -1467,17 +1520,30 @@ export default function App() {
                     suffix={showStudentList ? "个年级" : "个班级"}
                     icon={<GraduationCap size={23} />}
                     tone="orange"
+                    onClick={() => setModal({ kind: "overview", mode: showStudentList ? "grades" : "classes" })}
                   />
                   <StatCard
                     label="已保存课程反馈"
-                    value={moduleFeedback.length}
+                    value={completedModuleFeedbackCount}
                     suffix="次课程"
                     icon={<MessageSquareText size={22} />}
                     tone="purple"
+                    onClick={() => setModal({ kind: "overview", mode: "feedback" })}
                   />
                 </div>
               )}
-              {group && activePanel === "feedback" ? (
+              {group?.module === "course" && activePanel === "exams" ? (
+                <ExamWorkspace
+                  key={`exams-${group.id}-${reloadAttempt}-${workspaceEpoch}`}
+                  group={group}
+                  students={listedStudents}
+                  exams={(data.exams ?? []).filter((exam) => exam.classId === group.id)}
+                  onSave={saveExam}
+                  onDelete={deleteExam}
+                  autoSaveBlocked={conflict}
+                  onDirtyChange={markFeedbackDirty}
+                />
+              ) : group && activePanel === "feedback" ? (
                 listedStudents.length ? (
                   <FeedbackWorkspace
                     key={`class-${group.id}-${reloadAttempt}-${workspaceEpoch}`}
@@ -1814,7 +1880,7 @@ export default function App() {
           <div className="backup-notice">
             <ShieldCheck size={23} />
             <p>
-              学生资料、简短记录和反馈保存在项目的
+              学生资料、简短记录、反馈和考试成绩保存在项目的
               .local/nookmi.sqlite3。连接同一个本地后端的浏览器共用这份数据。请定期导出备份；AI
               密钥不会进入备份。
             </p>
@@ -1832,6 +1898,9 @@ export default function App() {
             <span>
               <strong>{feedbackSessions.length}</strong>次课程反馈
             </span>
+            <span>
+              <strong>{data.exams?.length ?? 0}</strong>次考试
+            </span>
           </div>
           <button
             className="backup-option"
@@ -1843,7 +1912,7 @@ export default function App() {
             </span>
             <span>
               <strong>导出完整备份</strong>
-              <small>保存学生资料、课程反馈和教学记录为 JSON 文件</small>
+              <small>保存学生资料、课程反馈、考试成绩和教学记录为 JSON 文件</small>
             </span>
             <ChevronRight size={18} />
           </button>
@@ -1902,7 +1971,7 @@ export default function App() {
                 setConfirmation({
                   title: "清空全部数据？",
                   message:
-                    "这会删除三个模块的全部班级、学生、课程反馈和教学记录，无法撤销。请确认已保存需要的备份。",
+                    "这会删除三个模块的全部班级、学生、课程反馈、考试成绩和教学记录，无法撤销。请确认已保存需要的备份。",
                   label: "清空全部数据",
                   danger: true,
                   action: async () => {
@@ -1933,6 +2002,13 @@ export default function App() {
         </Modal>
       )}
       {modal?.kind === "ai" && <AISettings onClose={() => setModal(null)} />}
+      {modal?.kind === "overview" && <ModuleOverview
+        module={route.module} moduleTitle={config.title} mode={modal.mode}
+        students={moduleStudents} classes={classes} sessions={moduleFeedback}
+        onClose={() => setModal(null)}
+        onStudent={(target) => { setModal(null); navigate({ module: target.module, classId: target.classId ?? undefined, studentId: target.id }); }}
+        onClass={(target) => { setModal(null); navigate({ module: target.module, classId: target.id }); }}
+      />}
       {confirmation && (
         <Modal title={confirmation.title} onClose={() => setConfirmation(null)}>
           <p className="confirm-message">{confirmation.message}</p>

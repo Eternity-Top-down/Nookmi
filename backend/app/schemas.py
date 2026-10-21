@@ -7,7 +7,7 @@ from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import (
-    AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StrictInt,
+    AfterValidator, BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt,
     StrictStr, field_validator, model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -231,6 +231,46 @@ class FeedbackSession(OptionalFieldsModel):
         return self
 
 
+ExamMaxScore = Annotated[StrictFloat, Field(gt=0, le=1000, allow_inf_nan=False)]
+ExamScore = Annotated[StrictFloat, Field(ge=0, le=1000, allow_inf_nan=False)]
+
+
+class ExamEntry(Model):
+    studentId: Identifier
+    school: Annotated[Text, Field(max_length=120)]
+    maxScore: ExamMaxScore
+    score: ExamScore | None
+    status: Literal["pending", "recorded", "absent"]
+
+    @model_validator(mode="after")
+    def validate_score(self) -> Self:
+        if self.status == "recorded":
+            if self.score is None or self.score > self.maxScore:
+                raise PydanticCustomError("exam_score_range", "已录入成绩须在 0 到该学生试卷满分之间")
+        elif self.score is not None:
+            raise PydanticCustomError("exam_unrecorded_score", "待录入或缺考学生的成绩必须为空")
+        return self
+
+
+class Exam(Model):
+    id: Identifier
+    classId: Identifier
+    name: Annotated[Text, Field(max_length=100), AfterValidator(nonblank)]
+    subject: Annotated[Text, Field(max_length=50), AfterValidator(nonblank)]
+    date: Day
+    defaultMaxScore: ExamMaxScore
+    entries: Annotated[list[ExamEntry], Field(max_length=50_000)]
+    createdAt: Timestamp
+    updatedAt: Timestamp
+
+    @model_validator(mode="after")
+    def validate_entries(self) -> Self:
+        ids = [entry.studentId for entry in self.entries]
+        if len(set(ids)) != len(ids):
+            raise PydanticCustomError("exam_students_duplicate", "同一次考试中存在重复学生")
+        return self
+
+
 class AppData(OptionalFieldsModel):
     schemaVersion: Literal[1]
     students: Annotated[list[Student], Field(max_length=50_000)]
@@ -238,6 +278,7 @@ class AppData(OptionalFieldsModel):
     records: Annotated[list[TeachingRecord], Field(max_length=100_000)]
     feedbackSessions: Annotated[list[FeedbackSession], Field(max_length=20_000)] | None = None
     feedbackStyles: Annotated[dict[Module, Text12000], Field(max_length=3)] | None = None
+    exams: Annotated[list[Exam], Field(max_length=20_000)] | None = None
 
     @field_validator("schemaVersion", mode="before")
     @classmethod
@@ -251,7 +292,8 @@ class AppData(OptionalFieldsModel):
         groups = {group.id: group for group in self.classes}
         students = {student.id: student for student in self.students}
         sessions = self.feedbackSessions or []
-        ids = [item.id for items in (self.classes, self.students, self.records, sessions) for item in items]
+        exams = self.exams or []
+        ids = [item.id for items in (self.classes, self.students, self.records, sessions, exams) for item in items]
         if len(set(ids)) != len(ids):
             raise ValueError("数据中存在重复 ID")
         for student in self.students:
@@ -280,6 +322,14 @@ class AppData(OptionalFieldsModel):
                     session.module != "one-to-one" and member.classId != session.classId
                 ):
                     raise ValueError("反馈学生不属于指定学生或班级")
+        for exam in exams:
+            target_class = groups.get(exam.classId)
+            if not target_class or target_class.module != "course":
+                raise PydanticCustomError("exam_class_invalid", "考试必须属于有效的班课班级")
+            for entry in exam.entries:
+                member = students.get(entry.studentId)
+                if not member or member.module != "course" or member.classId != exam.classId:
+                    raise PydanticCustomError("exam_student_invalid", "成绩学生不属于本次考试的班课班级")
         return self
 
     def payload(self) -> dict:

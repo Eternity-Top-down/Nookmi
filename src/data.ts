@@ -2,6 +2,8 @@ import {
   EMPTY_STUDENT,
   type AppData,
   type ClassGroup,
+  type Exam,
+  type ExamEntry,
   type FeedbackBrief,
   type FeedbackEntry,
   type FeedbackSession,
@@ -333,6 +335,12 @@ function array(value: unknown, label: string, max: number): unknown[] {
   return value;
 }
 
+function examMaxScore(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 || value > 1000)
+    throw new Error(`${label}须为大于 0 且不超过 1000 的数字`);
+  return value;
+}
+
 function feedbackBrief(value: unknown): FeedbackBrief {
   const row = object(value, "反馈课程信息");
   const periodStart = calendarDate(row.periodStart, "反馈开始日期");
@@ -634,7 +642,56 @@ export function parseBackup(text: string): AppData {
       };
     });
   }
+  if (Object.hasOwn(source, "exams")) {
+    const studentMap = new Map(students.map((student) => [student.id, student]));
+    result.exams = array(source.exams, "考试", 20_000).map((value): Exam => {
+      const row = object(value, "考试");
+      const classId = string(row.classId, "考试所属班级", 128, true);
+      if (classMap.get(classId)?.module !== "course")
+        throw new Error("考试必须属于有效的班课班级");
+      const date = calendarDate(row.date, "考试日期");
+      if (date < "1900-01-01" || date > "2100-12-31")
+        throw new Error("考试日期须在 1900—2100 年内");
+      const entryIds = new Set<string>();
+      const entries = array(row.entries, "学生成绩", 50_000).map((value): ExamEntry => {
+        const entry = object(value, "学生成绩");
+        const studentId = string(entry.studentId, "成绩所属学生", 128, true);
+        const member = studentMap.get(studentId);
+        if (!member || member.module !== "course" || member.classId !== classId)
+          throw new Error("成绩学生不属于本次考试的班课班级");
+        if (entryIds.has(studentId)) throw new Error("同一次考试中存在重复学生");
+        entryIds.add(studentId);
+        const maxScore = examMaxScore(entry.maxScore, "学生试卷满分");
+        if (entry.status !== "pending" && entry.status !== "recorded" && entry.status !== "absent")
+          throw new Error("成绩状态须为待录入、已录入或缺考");
+        let score: number | null = null;
+        if (entry.status === "recorded") {
+          if (typeof entry.score !== "number" || !Number.isFinite(entry.score) || entry.score < 0 || entry.score > maxScore)
+            throw new Error("已录入成绩须为 0 到该学生试卷满分之间的数字");
+          score = entry.score;
+        } else if (entry.score !== null) {
+          throw new Error("待录入或缺考学生的成绩必须为 null，不能记为零分");
+        }
+        return { studentId, school: string(entry.school, "考试时学校", 120), maxScore, score, status: entry.status };
+      });
+      return {
+        id: id(row.id, "考试 ID"), classId,
+        name: string(row.name, "考试名称", 100, true),
+        subject: string(row.subject, "考试科目", 50, true), date,
+        defaultMaxScore: examMaxScore(row.defaultMaxScore, "默认满分"), entries,
+        createdAt: timestamp(row.createdAt, "考试创建时间"),
+        updatedAt: timestamp(row.updatedAt, "考试更新时间"),
+      };
+    });
+  }
   return result;
+}
+
+/** Keep the exam and other students' scores when a student is removed. */
+export function pruneExamsForStudent(exams: Exam[], studentId: string): Exam[] {
+  return exams.map((exam) => exam.entries.some((entry) => entry.studentId === studentId)
+    ? { ...exam, entries: exam.entries.filter((entry) => entry.studentId !== studentId) }
+    : exam);
 }
 
 /** Remove exactly one history record, or only one student's part of that record. */

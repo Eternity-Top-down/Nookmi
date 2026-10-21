@@ -7,6 +7,7 @@ import {
   parseBackup,
   parseStudentImport,
   pruneFeedbackForStudent,
+  pruneExamsForStudent,
   removeFeedbackRecord,
   saveData,
   STORAGE_KEY,
@@ -17,6 +18,7 @@ import {
   type AppData,
   type FeedbackBrief,
   type FeedbackSession,
+  type Exam,
   type Student,
   type StudentObservations,
 } from "./types";
@@ -166,6 +168,85 @@ function feedbackFixture(): AppData & { feedbackSessions: FeedbackSession[] } {
 }
 
 afterEach(() => vi.unstubAllGlobals());
+
+function examFixture(): AppData & { exams: Exam[] } {
+  const data = feedbackFixture();
+  const member = data.students.find((item) => item.id === "course-student")!;
+  return {
+    ...data,
+    students: [...data.students, ...["zero", "pending", "absent"].map((suffix) => ({ ...member, id: `course-${suffix}` }))],
+    exams: [{
+      id: "exam-1", classId: "course-class", name: "第一次月考", subject: "数学",
+      date: "2026-10-21", defaultMaxScore: 150, createdAt: now, updatedAt: now,
+      entries: [
+        { studentId: "course-student", school: "第一学校", maxScore: 150, score: 112.5, status: "recorded" },
+        { studentId: "course-zero", school: "第二学校", maxScore: 100, score: 0, status: "recorded" },
+        { studentId: "course-pending", school: "", maxScore: 120, score: null, status: "pending" },
+        { studentId: "course-absent", school: "第一学校", maxScore: 150, score: null, status: "absent" },
+      ],
+    }],
+  };
+}
+
+describe("exam backups", () => {
+  it("preserves legacy absence, explicit empty exams, and every recorded status on round trip", () => {
+    expect(decode(minimal)).not.toHaveProperty("exams");
+    expect(decode({ ...minimal, exams: [] }).exams).toEqual([]);
+    const data = examFixture();
+    expect(decode(data)).toEqual(data);
+    data.students.find((item) => item.id === "course-student")!.school = "学生转学后";
+    expect(decode(data).exams![0].entries[0].school).toBe("第一学校");
+  });
+
+  it.each([null, {}, "考试"])("rejects invalid exam collections: %s", (exams) => {
+    expect(() => decode({ ...minimal, exams })).toThrow("考试必须是列表");
+  });
+
+  it.each([
+    ["defaultMaxScore", 0], ["defaultMaxScore", 1001], ["defaultMaxScore", true],
+    ["defaultMaxScore", "150"], ["date", "2026-02-30"], ["date", "1899-12-31"],
+    ["name", " "], ["subject", ""], ["name", "考".repeat(101)],
+    ["classId", "evening-class"], ["classId", "missing"], ["id", "course-student"],
+  ])("rejects invalid exam %s=%s", (key, value) => {
+    const data = examFixture();
+    Object.assign(data.exams[0], { [key as string]: value });
+    expect(() => decode(data)).toThrow();
+  });
+
+  it.each([
+    ["score", -1], ["score", 151], ["score", null], ["score", "100"], ["score", true],
+    ["score", Number.NaN], ["score", Number.POSITIVE_INFINITY],
+    ["maxScore", 0], ["maxScore", 1001], ["maxScore", "150"], ["maxScore", false],
+    ["status", "invalid"], ["status", "pending"], ["status", "absent"],
+    ["studentId", "other-evening-student"], ["studentId", "missing"], ["school", "校".repeat(121)],
+  ])("rejects invalid score entry %s=%s", (key, value) => {
+    const data = examFixture();
+    Object.assign(data.exams[0].entries[0], { [key as string]: value });
+    expect(() => decode(data)).toThrow();
+  });
+
+  it("rejects repeated students, exam IDs and missing empty score fields", () => {
+    const data = examFixture();
+    data.exams[0].entries.push(data.exams[0].entries[0]);
+    expect(() => decode(data)).toThrow("重复学生");
+    data.exams[0].entries.pop();
+    data.exams.push(data.exams[0]);
+    expect(() => decode(data)).toThrow("重复 ID");
+    data.exams.pop();
+    Object.assign(data.exams[0].entries[2], { score: undefined });
+    expect(() => decode(data)).toThrow("必须为 null");
+  });
+
+  it("removes only the deleted student's entries while keeping the exam", () => {
+    const data = examFixture();
+    const pruned = pruneExamsForStudent(data.exams, "course-student");
+    expect(pruned[0].entries).toEqual(data.exams[0].entries.slice(1));
+    expect(data.exams[0].entries).toHaveLength(4);
+    expect(pruneExamsForStudent(data.exams, "missing")[0]).toBe(data.exams[0]);
+    const single = [{ ...data.exams[0], entries: [data.exams[0].entries[0]] }];
+    expect(pruneExamsForStudent(single, "course-student")[0].entries).toEqual([]);
+  });
+});
 
 describe("bulk student import", () => {
   it("accepts name-only lists and inherits the class grade", () => {

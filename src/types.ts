@@ -77,6 +77,27 @@ export interface FeedbackSession {
   updatedAt: string;
 }
 
+export interface ExamEntry {
+  studentId: string;
+  /** School at the time of this exam, independent of later profile edits. */
+  school: string;
+  maxScore: number;
+  score: number | null;
+  status: "pending" | "recorded" | "absent";
+}
+
+export interface Exam {
+  id: string;
+  classId: string;
+  name: string;
+  subject: string;
+  date: string;
+  defaultMaxScore: number;
+  entries: ExamEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppData {
   schemaVersion: 1;
   students: Student[];
@@ -84,6 +105,7 @@ export interface AppData {
   records: TeachingNote[];
   feedbackSessions?: FeedbackSession[];
   feedbackStyles?: Partial<Record<ModuleId, string>>;
+  exams?: Exam[];
 }
 
 export interface ImportRow {

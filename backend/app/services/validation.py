@@ -37,6 +37,21 @@ FIELDS = {
     ("title",): FieldInfo("反馈标题", 300),
 }
 
+EXAM_FIELDS = {
+    (): FieldInfo("考试", kind="object"),
+    ("name",): FieldInfo("考试名称", 100),
+    ("subject",): FieldInfo("考试科目", 50),
+    ("date",): FieldInfo("考试日期", kind="date"),
+    ("classId",): FieldInfo("考试所属班级", 128),
+    ("defaultMaxScore",): FieldInfo("考试默认满分", kind="exam_max_score"),
+    ("entries",): FieldInfo("考试成绩", 50_000, "object"),
+    ("entries", "school"): FieldInfo("考试时学校", 120),
+    ("entries", "studentId"): FieldInfo("成绩所属学生", 128),
+    ("entries", "score"): FieldInfo("学生成绩", kind="exam_score"),
+    ("entries", "maxScore"): FieldInfo("学生试卷满分", kind="exam_max_score"),
+    ("entries", "status"): FieldInfo("成绩状态", kind="exam_status"),
+}
+
 
 def field_info(location: tuple) -> FieldInfo | None:
     # Never join the raw location: dictionary keys and unknown field names can
@@ -44,6 +59,14 @@ def field_info(location: tuple) -> FieldInfo | None:
     path = location[1:] if location[:1] == ("body",) else location
     if path[:1] == ("data",):
         path = path[1:]
+        if path[:1] == ("exams",):
+            if len(path) == 1:
+                return FieldInfo("考试", 20_000, "list")
+            if isinstance(path[1], int):
+                exam_path = path[2:]
+                if exam_path[:1] == ("entries",) and len(exam_path) > 1 and isinstance(exam_path[1], int):
+                    exam_path = ("entries",) + exam_path[2:]
+                return EXAM_FIELDS.get(exam_path)
         if path[:1] == ("feedbackSessions",) and len(path) > 2 and isinstance(path[1], int):
             path = path[2:]
             if path[:1] == ("entries",) and len(path) > 2 and isinstance(path[1], int):
@@ -77,6 +100,15 @@ def validation_message(error: dict) -> str:
         return "「课程次数」仅适用于一对一反馈，晚辅和班课请留空"
     if code == "feedback_title_module":
         return "「反馈标题」仅适用于一对一反馈，晚辅和班课请省略"
+    exam_errors = {
+        "exam_score_range": "已录入成绩须为 0 到该学生试卷满分之间的数字",
+        "exam_unrecorded_score": "待录入或缺考学生的成绩应留空，不能记为零分",
+        "exam_students_duplicate": "同一次考试中存在重复学生，请每位学生只保留一条成绩",
+        "exam_class_invalid": "考试必须属于有效的班课班级，请检查考试所属班级",
+        "exam_student_invalid": "成绩学生不属于本次考试的班课班级，请检查学生所属班级",
+    }
+    if code in exam_errors:
+        return exam_errors[code]
     if info and info.kind == "lesson_number":
         return "「课程次数」须为 1—9999 的整数"
     if code == "api_key_conflict":
@@ -93,6 +125,12 @@ def validation_message(error: dict) -> str:
         return f"{label}不能为空或只有空格"
     if code == "text_unicode":
         return f"{label}包含无效文本字符，请重新粘贴或输入"
+    if info and info.kind == "exam_max_score":
+        return f"{label}须为大于 0 且不超过 1000 的数字"
+    if info and info.kind == "exam_score":
+        return f"{label}须为 0 到该学生试卷满分之间的数字；待录入或缺考时请留空"
+    if info and info.kind == "exam_status":
+        return f"{label}须为待录入、已录入或缺考"
     if code in ("string_too_long", "too_long") and info and info.limit is not None:
         if info.kind in ("list", "object"):
             return f"{label}最多 {info.limit} 项，请删减后重试"

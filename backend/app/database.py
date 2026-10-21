@@ -60,6 +60,20 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS students_class ON students(class_id);
                 CREATE INDEX IF NOT EXISTS feedback_student ON feedback_entries(student_id);
+                CREATE TABLE IF NOT EXISTS exams (
+                    id TEXT PRIMARY KEY,
+                    class_id TEXT NOT NULL REFERENCES classes(id),
+                    exam_date TEXT NOT NULL, position INTEGER NOT NULL,
+                    payload TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS exam_entries (
+                    exam_id TEXT NOT NULL REFERENCES exams(id),
+                    student_id TEXT NOT NULL REFERENCES students(id),
+                    position INTEGER NOT NULL, payload TEXT NOT NULL,
+                    PRIMARY KEY(exam_id, student_id)
+                );
+                CREATE INDEX IF NOT EXISTS exams_class ON exams(class_id);
+                CREATE INDEX IF NOT EXISTS exam_entries_student ON exam_entries(student_id);
             """)
 
     @contextmanager
@@ -99,6 +113,19 @@ class Database:
         ).fetchone()
         if preference is not None:
             data["feedbackStyles"] = json.loads(preference["value"])
+        exams_present = connection.execute(
+            "SELECT value FROM workspace_preferences WHERE key=?", ("examsPresent",),
+        ).fetchone()
+        if exams_present is not None:
+            exams = []
+            exam_entries: dict[str, list[dict]] = {}
+            for row in connection.execute("SELECT exam_id,payload FROM exam_entries ORDER BY position"):
+                exam_entries.setdefault(row["exam_id"], []).append(json.loads(row["payload"]))
+            for row in connection.execute("SELECT id,payload FROM exams ORDER BY position"):
+                exam = json.loads(row["payload"])
+                exam["entries"] = exam_entries.get(row["id"], [])
+                exams.append(exam)
+            data["exams"] = exams
         return {"data": data, "revision": meta["revision"]}
 
     def read(self) -> dict:
@@ -116,13 +143,18 @@ class Database:
                 current = connection.execute("SELECT revision FROM workspace_meta WHERE id=1").fetchone()[0]
                 if current != revision:
                     raise RevisionConflict()
-                for table in ("feedback_entries", "feedback_sessions", "records", "students", "classes"):
+                for table in ("exam_entries", "exams", "feedback_entries", "feedback_sessions", "records", "students", "classes"):
                     connection.execute(f"DELETE FROM {table}")
                 connection.execute("DELETE FROM workspace_preferences WHERE key=?", ("feedbackStyles",))
                 if "feedbackStyles" in payload:
                     connection.execute(
                         "INSERT INTO workspace_preferences(key,value) VALUES (?,?)",
                         ("feedbackStyles", self.encode(payload["feedbackStyles"])),
+                    )
+                connection.execute("DELETE FROM workspace_preferences WHERE key=?", ("examsPresent",))
+                if "exams" in payload:
+                    connection.execute(
+                        "INSERT INTO workspace_preferences(key,value) VALUES (?,?)", ("examsPresent", "true"),
                     )
                 for index, row in enumerate(payload["classes"]):
                     connection.execute("INSERT INTO classes VALUES (?,?,?,?)", (row["id"], row["module"], index, self.encode(row)))
@@ -140,6 +172,15 @@ class Database:
                             row["id"], entry["studentId"], entry["content"],
                             self.encode(entry["observations"]) if "observations" in entry else None,
                             entry_index, self.encode(entry),
+                        ))
+                for index, row in enumerate(payload.get("exams", [])):
+                    exam = {key: value for key, value in row.items() if key != "entries"}
+                    connection.execute("INSERT INTO exams VALUES (?,?,?,?,?)", (
+                        row["id"], row["classId"], row["date"], index, self.encode(exam),
+                    ))
+                    for entry_index, entry in enumerate(row["entries"]):
+                        connection.execute("INSERT INTO exam_entries VALUES (?,?,?,?)", (
+                            row["id"], entry["studentId"], entry_index, self.encode(entry),
                         ))
                 connection.execute(
                     "UPDATE workspace_meta SET revision=?,feedback_present=? WHERE id=1",
