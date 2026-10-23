@@ -20,6 +20,8 @@ import FeedbackComparisonView from "./FeedbackComparisonView";
 import { adoptGeneratedFeedback, captureFeedbackInput, cloneFeedbackAsNewSession, resumeFeedbackEditing, setFeedbackReviewed } from "./feedbackComparisonModel";
 import FeedbackWordExport from "./FeedbackWordExport";
 import FeedbackRosterTable from "./FeedbackRosterTable";
+import FeedbackRegenerationControls, { regenerationCandidates, selectedRegenerationTargets } from "./FeedbackRegenerationControls";
+import { FEEDBACK_BATCH_CONCURRENCY, runFeedbackPool } from "./feedbackGenerationPool";
 import { feedbackDraftScope, readFeedbackDrafts, writeFeedbackDraft, removeFeedbackDraft, type FeedbackDraftRecord } from "./feedbackDrafts";
 import { newId } from "./data";
 import {
@@ -102,8 +104,7 @@ type Progress = {
   success: number;
   failed: number;
   skipped: number;
-  name: string;
-  studentId: string;
+  active: { id: string; name: string }[];
 };
 const OBSERVATION_FIELDS: {
   key: Exclude<keyof StudentObservations, "subjects">;
@@ -285,6 +286,9 @@ export default function FeedbackWorkspace({
   const [status, setStatus] = useState<Notice>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [regenerationSelection, setRegenerationSelection] = useState<string[]>([]);
+  const regenerationChoices = regenerationCandidates(students, draft.entries);
+  const regenerationTargets = selectedRegenerationTargets(students, draft.entries, regenerationSelection);
   const [copyFallback, setCopyFallback] = useState<{
     text: string;
     reason: string;
@@ -516,6 +520,7 @@ export default function FeedbackWorkspace({
     setProgress(null);
     setFailures(new Map());
     setProposal(null);
+    setRegenerationSelection([]);
     setConfirmation(null);
   }
   function requestSession(session?: FeedbackSession) {
@@ -772,7 +777,7 @@ export default function FeedbackWorkspace({
       });
     }
   }
-  async function runGeneration(targets: Student[], single = false) {
+  async function runGeneration(targets: Student[], mode: "missing" | "single" | "replace-selected" = "missing") {
     if (readonly || controller.current || !validateContext()) return;
     if (styleDirty) {
       setStatus({ text: "请先保存或撤销风格参考的修改，再生成反馈。", error: true });
@@ -795,112 +800,137 @@ export default function FeedbackWorkspace({
       success: 0,
       failed: 0,
       skipped: 0,
-      name: "",
-      studentId: "",
+      active: [],
     };
+    const active = new Map<string, string>();
+    const requestedRevisions = new Map(targets.map((student) => [student.id, revision(student.id)]));
+    const sessionId = draftRef.current.id;
+    const currentJob = () => job === generationId.current && !abortController.signal.aborted && draftRef.current.id === sessionId;
+    const publishProgress = () => {
+      if (currentJob()) setProgress({ ...summary, active: [...active].map(([id, name]) => ({ id, name })) });
+    };
+    let configurationFailed = false;
     const reviewWarnings: { name: string; warning: string }[] = [];
     setProgress({ ...summary });
     setNeedsConfiguration(false);
     setStatus(null);
-    for (const target of targets) {
-      if (job !== generationId.current || abortController.signal.aborted)
-        return;
-      const student = studentsRef.current.find((item) => item.id === target.id);
-      const current = draftRef.current;
-      const entry = student ? entryFor(current, student.id) : null;
-      if (
-        !student ||
-        !entry ||
-        !hasPersonalFacts(entry.observations) ||
-        (!single && entry.content.trim())
-      ) {
-        summary.skipped++;
-        summary.completed++;
-        setProgress({ ...summary });
-        continue;
-      }
-      const started = revision(student.id);
-      const signature = sourceSignature(current, student, generationStyle);
-      const sourceInput = captureFeedbackInput(current, student);
-      setFailures((prior) => {
-        const next = new Map(prior);
-        next.delete(student.id);
-        return next;
-      });
-      summary.name = student.name;
-      summary.studentId = student.id;
-      setProgress({ ...summary });
-      try {
-        const result = await generateFeedback(
-          {
-            module,
-            brief: sourceInput.brief,
-            observations: sourceInput.observations,
-            grade: sourceInput.grade,
-            styleReference: generationStyle,
-          },
-          abortController.signal,
-        );
-        if (job !== generationId.current || abortController.signal.aborted)
-          return;
-        const content = prepareGeneratedFeedback(result.content, student.name);
+    try {
+      await runFeedbackPool(targets, async (target) => {
+        if (!currentJob()) return;
+        const student = studentsRef.current.find((item) => item.id === target.id);
+        const current = draftRef.current;
+        const entry = student ? entryFor(current, student.id) : null;
         if (
-          !studentsRef.current.some((item) => item.id === student.id) ||
-          !canApplyGeneration(started, revision(student.id))
+          !student ||
+          !entry ||
+          !hasPersonalFacts(entry.observations) ||
+          (mode === "missing" && entry.content.trim())
         ) {
           summary.skipped++;
-          setFailures((prior) =>
-            new Map(prior).set(
-              student.id,
-              "生成期间记录已修改，返回结果未覆盖当前内容。可按最新记录重新生成。",
-            ),
-          );
-        } else {
-          const aiDraft: FeedbackAIDraft = {
-            id: newId(), sessionId: current.id, studentId: student.id,
-            content, input: sourceInput, createdAt: new Date().toISOString(), model: result.model,
-          };
-          const reviewWarning = typeof result.reviewWarning === "string" ? result.reviewWarning.trim() : "";
-          if (reviewWarning) reviewWarnings.push({ name: student.name, warning: reviewWarning });
-          if (entry.content.trim()) {
-            setProposal({
-              student,
-              content,
-              source: "ai",
-              signature,
-              revision: started,
-              reviewWarning,
-              aiDraft,
-            });
-          } else acceptGenerated(student, content, "ai", signature, aiDraft);
-          summary.success++;
-        }
-      } catch (error) {
-        if (job !== generationId.current || abortController.signal.aborted)
+          summary.completed++;
+          publishProgress();
           return;
-        summary.failed++;
-        const message =
-          error instanceof Error ? error.message : "生成失败，请稍后重试。";
-        setFailures((prior) => new Map(prior).set(student.id, message));
-        if (error instanceof ApiError && error.status === 503) {
-          setNeedsConfiguration(true);
-          summary.skipped += targets.length - summary.completed - 1;
-          summary.completed = targets.length;
-          setStatus({
-            text: "尚未配置可用的 AI 服务。可以先保存记录或按原始记录整理草稿，再打开 AI 设置。",
-            error: true,
-          });
-          break;
         }
-      }
-      summary.completed++;
-      setProgress({ ...summary });
+        if (mode === "replace-selected" && !canApplyGeneration(requestedRevisions.get(student.id)!, revision(student.id))) {
+          summary.skipped++;
+          summary.completed++;
+          setFailures((prior) => new Map(prior).set(student.id, "等待生成期间记录或正文已修改，已保留当前内容。可按最新记录重新生成。"));
+          publishProgress();
+          return;
+        }
+        const started = revision(student.id);
+        const signature = sourceSignature(current, student, generationStyle);
+        const sourceInput = captureFeedbackInput(current, student);
+        setFailures((prior) => {
+          const next = new Map(prior);
+          next.delete(student.id);
+          return next;
+        });
+        active.set(student.id, student.name);
+        publishProgress();
+        try {
+          const result = await generateFeedback(
+            {
+              module,
+              brief: sourceInput.brief,
+              observations: sourceInput.observations,
+              grade: sourceInput.grade,
+              styleReference: generationStyle,
+            },
+            abortController.signal,
+          );
+          if (!currentJob())
+            return;
+          const content = prepareGeneratedFeedback(result.content, student.name);
+          if (
+            !studentsRef.current.some((item) => item.id === student.id) ||
+            !canApplyGeneration(started, revision(student.id))
+          ) {
+            summary.skipped++;
+            setFailures((prior) =>
+              new Map(prior).set(
+                student.id,
+                "生成期间记录已修改，返回结果未覆盖当前内容。可按最新记录重新生成。",
+              ),
+            );
+          } else {
+            const aiDraft: FeedbackAIDraft = {
+              id: newId(), sessionId: current.id, studentId: student.id,
+              content, input: sourceInput, createdAt: new Date().toISOString(), model: result.model,
+            };
+            const reviewWarning = typeof result.reviewWarning === "string" ? result.reviewWarning.trim() : "";
+            if (reviewWarning) reviewWarnings.push({ name: student.name, warning: reviewWarning });
+            if (mode === "single" && entry.content.trim()) {
+              setProposal({
+                student,
+                content,
+                source: "ai",
+                signature,
+                revision: started,
+                reviewWarning,
+                aiDraft,
+              });
+            } else acceptGenerated(student, content, "ai", signature, aiDraft);
+            summary.success++;
+          }
+        } catch (error) {
+          if (!currentJob())
+            return;
+          summary.failed++;
+          const message =
+            error instanceof Error ? error.message : "生成失败，请稍后重试。";
+          setFailures((prior) => new Map(prior).set(student.id, message));
+          if (error instanceof ApiError && error.status === 503) {
+            configurationFailed = true;
+            setNeedsConfiguration(true);
+            setStatus({
+              text: "尚未配置可用的 AI 服务。可以先保存记录或按原始记录整理草稿，再打开 AI 设置。",
+              error: true,
+            });
+          }
+        } finally {
+          active.delete(student.id);
+          summary.completed++;
+          publishProgress();
+        }
+      }, {
+        concurrency: mode === "single" || isOneToOne ? 1 : FEEDBACK_BATCH_CONCURRENCY,
+        signal: abortController.signal,
+        shouldContinue: () => currentJob() && !configurationFailed,
+      });
+    } catch {
+      if (currentJob()) setStatus({ text: "本批生成已停止，已完成的结果和原有正文均已保留。请重试未完成的学生。", error: true });
     }
     if (job === generationId.current) {
+      summary.skipped += summary.total - summary.completed;
+      summary.completed = summary.total;
       controller.current = null;
       setProgress(null);
       setStatus((previous) => {
-          const notice = previous ?? {
+          const notice = configurationFailed ? {
+            text: `AI 服务配置不可用，已停止后续生成。${summary.success} 位成功，${summary.failed} 位失败，${summary.skipped} 位跳过。请检查 AI 设置后重试。`,
+            error: true,
+          } : previous ?? {
             text: isOneToOne
               ? (summary.failed ? "本次生成未完成，请查看下方原因后重试。" : "反馈已生成，请核对后复制。")
               : `生成完成：${summary.success} 位成功，${summary.failed} 位失败，${summary.skipped} 位跳过。请逐一核对后复制。`,
@@ -928,10 +958,10 @@ export default function FeedbackWorkspace({
         label: "生成候选草稿",
         action: () => {
           setConfirmation(null);
-          void runGeneration([student], true);
+          void runGeneration([student], "single");
         },
       });
-    } else void runGeneration([student], true);
+    } else void runGeneration([student], "single");
   }
   async function copy(student?: Student) {
     if (!validateContext()) return;
@@ -1290,6 +1320,13 @@ export default function FeedbackWorkspace({
           const now = new Date().toISOString();
           const next = cloneFeedbackAsNewSession(draftRef.current, newId(), now);
           if (!cacheDraft(next, "")) return;
+          cancelGeneration("已另存为新反馈，原有文字已保留。请在新反馈中继续生成。");
+          epoch.current++;
+          contextVersion.current = 0;
+          entryVersions.current.clear();
+          setProposal(null);
+          setRegenerationSelection([]);
+          setFailures(new Map());
           const removed = removeFeedbackDraft(scope, previousId);
           if (removed.ok) setLocalDrafts((prior) => prior.filter((item) => item.session.id !== previousId));
           else setLocalError(removed.error);
@@ -1510,11 +1547,7 @@ export default function FeedbackWorkspace({
       {isOneToOne && progress && (
         <div className="fb-generation-progress" role="status">
           <LoaderCircle size={17} className="fb-spin" />
-          <span>
-            {isOneToOne
-              ? "生成并检查中…"
-              : `生成并检查中 ${progress.name || "反馈"} · ${progress.completed} / ${progress.total}，失败 ${progress.failed} 位`}
-          </span>
+          <span>生成并检查中…</span>
           <button
             type="button"
             className="button button-ghost button-sm"
@@ -1535,7 +1568,7 @@ export default function FeedbackWorkspace({
         isOneToOne ? <div className="fb-composer fb-one-student">{selected && renderStudentPanels(selected)}</div> : <>
           <FeedbackRosterTable key={draft.id} module={module} students={students} entries={draft.entries}
             subjects={activeBrief.subjects} readonly={readonly} failures={failures} staleIds={staleIds}
-            generatingStudentId={progress?.studentId} onViewResult={(id) => viewResult(resultId(id))}
+            generatingStudentIds={progress?.active.map((student) => student.id)} onViewResult={(id) => viewResult(resultId(id))}
             onObservationChange={changeObservation}
             onSubjectChange={(id, subject, value) => changeEntry(id, (entry) => {
               const observations = normalizeObservations(entry.observations);
@@ -1546,7 +1579,7 @@ export default function FeedbackWorkspace({
           <div className="fb-batch-bar">
             <div>
               <strong>{eligible.length ? `${eligible.length} 人可生成` : filledCount ? "已有正文已保留" : "先记录学生的真实情况"}</strong>
-              <p>只生成有记录且正文为空的学生；已有正文在下方单独修改或重新生成。</p>
+              <p>每批最多 {FEEDBACK_BATCH_CONCURRENCY} 人同时生成，完成一人即补下一人。已有正文保留，可在下方勾选重新生成。</p>
               {styleDirty && <p className="fb-inline-error">请先保存或撤销上方风格参考的修改，再生成。</p>}
             </div>
             {!readonly && <button type="button" className="button button-primary"
@@ -1559,7 +1592,7 @@ export default function FeedbackWorkspace({
           {statusNotice}
           {progress && <div className="fb-generation-progress" role="status">
             <LoaderCircle size={17} className="fb-spin" />
-            <span>生成并检查中 {progress.name || "反馈"} · {progress.completed} / {progress.total}，失败 {progress.failed} 位</span>
+            <span>同时生成 {progress.active.length} 人{progress.active.length > 0 ? `：${progress.active.map((student) => student.name).join("、")}` : ""} · 已处理 {progress.completed} / {progress.total}，失败 {progress.failed} 位</span>
             <button type="button" className="button button-ghost button-sm" onClick={() => cancelGeneration()}><Square size={13} />停止生成</button>
           </div>}
           <div className="fb-work-heading fb-results-heading" id={`${fieldId}-results`} tabIndex={-1}>
@@ -1568,11 +1601,23 @@ export default function FeedbackWorkspace({
             </div>
           </div>
           <div className="fb-class-workspace">
+          <FeedbackRegenerationControls students={students} entries={draft.entries} selectedIds={regenerationSelection}
+            onSelectionChange={setRegenerationSelection} onRegenerate={() => void runGeneration(regenerationTargets, "replace-selected")}
+            busy={Boolean(progress) || styleDirty} readonly={readonly} />
           {students.map((student) => {
             const entry = entryFor(draft, student.id);
-            const state = failures.has(student.id) ? "生成待重试" : entry.content.trim()
+            const generating = progress?.active.some((item) => item.id === student.id);
+            const state = generating ? "正在生成" : failures.has(student.id) ? "生成待重试" : entry.content.trim()
               ? staleIds.has(student.id) ? "记录已更新" : entry.reviewed ? "已核对" : "待核对" : hasPersonalFacts(entry.observations) ? "待生成" : "待记录";
             return <article className="fb-student-card fb-student-result" key={student.id} id={resultId(student.id)} tabIndex={-1} aria-label={`${student.name}的反馈结果`}>
+              {!readonly && entry.content.trim() && <div className="fb-result-selection"><label>
+                <input type="checkbox" aria-label={`选择${student.name}重新生成`}
+                  checked={regenerationTargets.some((item) => item.id === student.id)}
+                  disabled={Boolean(progress) || !regenerationChoices.some((item) => item.id === student.id)}
+                  onChange={(event) => setRegenerationSelection((prior) => event.target.checked
+                    ? [...new Set([...prior, student.id])] : prior.filter((id) => id !== student.id))} />
+                选择重新生成
+              </label></div>}
               <details className="fb-result-details" open={expandedResults.has(student.id)} onToggle={(event) => {
                 const open = event.currentTarget.open;
                 setExpandedResults((current) => {
@@ -1582,7 +1627,7 @@ export default function FeedbackWorkspace({
                   return next;
                 });
               }}>
-                <summary><strong>{student.name}</strong><span>{entry.content.trim() ? state : `${failures.has(student.id) ? "生成待重试" : "尚未生成"} · 可展开手写或单独生成`}</span></summary>
+                <summary><strong>{student.name}</strong><span>{generating || entry.content.trim() ? state : `${failures.has(student.id) ? "生成待重试" : "尚未生成"} · 可展开手写或单独生成`}</span></summary>
                 {renderStudentPanels(student, true)}
               </details>
             </article>;

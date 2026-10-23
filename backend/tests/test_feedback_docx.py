@@ -14,7 +14,7 @@ NS = {"w": W}
 
 
 def sample():
-    return {"title": "初二班本周晚辅反馈", "entries": [
+    return {"title": "初二班 2026年10月第4周 晚辅反馈", "entries": [
         {"studentName": "示例学生甲", "content": "本周按时完成作业。\n数学：能独立订正。\n\n建议复习本周错题。"},
         {"studentName": "示例学生乙", "content": "课堂思考认真，建议注意过程书写。"},
     ]}

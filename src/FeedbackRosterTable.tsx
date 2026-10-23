@@ -12,7 +12,7 @@ interface FeedbackRosterTableProps {
   readonly: boolean;
   failures: Map<string, string>;
   staleIds: Set<string>;
-  generatingStudentId?: string;
+  generatingStudentIds?: readonly string[];
   onObservationChange: (
     id: string,
     key: Exclude<keyof StudentObservations, "subjects">,
@@ -37,7 +37,7 @@ export default function FeedbackRosterTable({
   readonly,
   failures,
   staleIds,
-  generatingStudentId,
+  generatingStudentIds = [],
   onObservationChange,
   onSubjectChange,
   onViewResult,
@@ -112,7 +112,7 @@ export default function FeedbackRosterTable({
             const failure = failures.get(student.id);
             const status = failures.has(student.id)
               ? { text: "生成待重试", kind: "error" }
-              : generatingStudentId === student.id
+              : generatingStudentIds.includes(student.id)
                 ? { text: "正在生成", kind: "generating" }
                 : staleIds.has(student.id)
                   ? { text: "记录已更新", kind: "stale" }

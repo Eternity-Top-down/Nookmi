@@ -92,7 +92,9 @@ describe("feedback roster table", () => {
     const failed = render({ failures: new Map([["student-1", "服务暂不可用"]]) });
     expect(rowFor(failed, "乙同学")).toContain("待重试");
     expect(rowFor(failed, "乙同学")).toContain("服务暂不可用");
-    expect(rowFor(render({ generatingStudentId: "student-1" }), "乙同学")).toContain("正在生成");
+    const parallel = render({ generatingStudentIds: ["student-0", "student-1"] });
+    expect(rowFor(parallel, "甲同学")).toContain("正在生成");
+    expect(rowFor(parallel, "乙同学")).toContain("正在生成");
   });
 
   it("does not count plans or tasks as facts and omits students outside the current roster", () => {

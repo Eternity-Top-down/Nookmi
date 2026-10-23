@@ -961,3 +961,6 @@
     animation: none;
   }
 }
+.fb-result-selection { display: flex; justify-content: flex-end; padding: 10px 16px 0; }
+.fb-result-selection label { display: inline-flex; gap: 7px; align-items: center; color: var(--muted); font-size: 12px; cursor: pointer; }
+.fb-result-selection input { width: 16px; height: 16px; accent-color: var(--green); }

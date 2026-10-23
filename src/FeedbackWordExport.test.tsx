@@ -36,17 +36,18 @@ describe("Word feedback export", () => {
     expect(html).not.toContain('disabled=""');
   });
 
-  it("requests a Word file with title and raw student bodies only", async () => {
+  it.each(["本周反馈", "初二班 2026年10月第4周 晚辅反馈", "老师手写的标题，保持原样"])("requests a Word file without rewriting its supplied title: %s", async (title) => {
+    const customInput = { ...input, title };
     const fetchMock = vi.fn().mockResolvedValue(new Response("word-bytes", { headers: {
       "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "content-disposition": `attachment; filename="feedback.docx"; filename*=UTF-8''${encodeURIComponent("本周反馈.docx")}`,
     } }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = await requestFeedbackWord(input);
+    const result = await requestFeedbackWord(customInput);
     expect(result.filename).toBe("本周反馈.docx");
     expect(await result.blob.text()).toBe("word-bytes");
     expect(fetchMock.mock.calls[0][0]).toBe("/api/exports/feedback-docx");
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(input);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(customInput);
   });
 
   it.each([
